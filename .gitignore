@@ -1,0 +1,32 @@
+# ── 시크릿 (절대 커밋 금지) ──
+.env
+*.pem
+*.key
+credentials.json
+token.json
+
+# ── 데이터/볼륨 ──
+data/
+volumes/
+*.dump
+*.sql.bak
+
+# ── 모델 가중치 (S3 models/ 에 보관) ──
+*.pt
+*.onnx
+*.engine
+
+# ── 파이썬 ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── 노드 ──
+node_modules/
+
+# ── OS/에디터 ──
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

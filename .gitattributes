@@ -1,0 +1,4 @@
+# 컨테이너에서 실행되는 셸 스크립트는 반드시 LF (CRLF면 /bin/sh 실행 실패)
+*.sh text eol=lf
+# 기타 텍스트는 플랫폼 자동
+* text=auto

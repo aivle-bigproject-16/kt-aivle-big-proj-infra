@@ -1,0 +1,94 @@
+# 배터리 결함검사 시뮬레이션 — 인프라 데이터 레이어
+# Phase: 데이터 레이어 우선(postgres + mongo + minio). 앱 서비스(FE/BE/AI/LLM)는 후속 배선.
+# 아키텍처 v2 §2 결정 10·11, §8 참조.
+
+name: battery-inspection-infra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: battery-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # DB 설계서 DDL 배치 시 최초 기동에 자동 실행(빈 볼륨일 때만). 스키마 소유 = BE(김현민).
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - battery-net
+
+  mongo:
+    image: mongo:7
+    container_name: battery-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - battery-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: battery-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"       # S3 API (boto3 endpoint)
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"   # 웹 콘솔
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - battery-net
+
+  # 버킷 + 프리픽스 구조 1회 생성 후 종료(oneshot). 아키텍처 v2 §8.
+  minio-init:
+    image: minio/mc:latest
+    container_name: battery-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET}
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    volumes:
+      - ./minio/init-buckets.sh:/init-buckets.sh:ro
+    networks:
+      - battery-net
+
+networks:
+  battery-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  mongo-data:
+  minio-data:
