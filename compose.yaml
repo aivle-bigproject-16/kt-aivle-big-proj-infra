@@ -1,0 +1,232 @@
+# 배터리 결함검사 생산 시뮬레이션 — 통합 인프라 형상
+#
+# 정본: 시스템 계약서 Core [실행/컨테이너] · [실행/프로파일] · [실행/환경변수]
+# 이 파일은 계약이 아니라 계약의 구현이다. 값이 어긋나면 계약을 고치고 여기를 맞춘다.
+#
+# --- 이 파일이 계약과 다른 점 (2026-07-31 확정, DECISIONS 등록 필요) --------
+# 1) 관계형 DB 를 컨테이너로 띄우지 않는다. Supabase PostgreSQL 을 직접 쓴다.
+#    BE 코드가 이미 Supabase 에 붙어 있고 팀이 그 위에서 개발 중이다.
+#    따라서 postgres 서비스와 postgres/initdb 마운트가 이 파일에 없다.
+#    주의: Supabase 리전은 ap-southeast-2, S3 는 ap-northeast-2 다. 왕복 지연이 붙는다.
+# 2) 오브젝트 스토리지도 컨테이너로 띄우지 않는다. 개발·배포 모두 AWS S3 단독이다.
+#    개발자는 각자의 IAM 자격증명을 .env 에 넣는다. 오프라인 개발은 불가능하다.
+# 3) BE 는 컨테이너 2개다. 경계는 아래와 같다.
+#      module-api(8080) = FE 대응. REST · WebSocket · 인증 · 시뮬레이션 오케스트레이션.
+#      module-ai (8081) = 모델 서버 연동 전담. vlm(8001) 과 ai-infer(8000) 를 둘 다 붙인다.
+#    둘은 서로 다른 부트 앱이고 module-api 는 module-ai 에 의존하지 않는다.
+#    module-api → module-ai 는 HTTP 호출이다.
+#    계약 [실행/컨테이너]는 backend 1개(8종) 형상이라 9종으로 개정해야 한다.
+#
+# --- 구조 원칙 ---------------------------------------------------------------
+# 1) 데이터 레이어(redis)는 프로파일이 없다. 항상 기동한다.
+# 2) GPU 장치 예약(deploy.resources.reservations.devices)은 이 파일에 없다.
+#    NVIDIA 런타임이 없는 머신에서 파싱 단계부터 실패하기 때문이다. compose.gpu.yaml 로 분리한다.
+# 3) backend 는 ai-infer / vlm 에 depends_on 을 걸지 않는다.
+#    런타임 HTTP 호출이지 기동 의존이 아니다. *_BASE_URL 환경변수로 붙는다.
+#    GPU 없는 FE·BE 개발자도 backend 를 띄울 수 있어야 한다.
+#
+# --- 아직 존재하지 않는 것 (기동 전 선행 과제) -------------------------------
+#   - BE Dockerfile 없음 (module-api·module-ai 둘 다)
+#   - FE Dockerfile·nginx.conf 없음 (FE 레포에 없다. templates/nginx.conf 를 넣어야 한다)
+#   - 따라서 아래 ghcr.io 이미지는 아직 하나도 존재하지 않는다. 빌드·푸시가 인프라 1번 과제다.
+#
+# --- 기동 예시 ---------------------------------------------------------------
+#   docker compose up -d                                  # redis 만
+#   docker compose --profile app up -d                    # + FE·BE 2종 (GPU 불필요)
+#   docker compose --profile app --profile stub up -d     # + AI 스텁 (GPU 없는 BE 개발자)
+#   docker compose --profile app --profile llm up -d      # + vlm 만 (생성 모델 담당)
+#   docker compose --profile app --profile ai up -d       # + ai-infer + vlm (GPU 보유)
+#   docker compose -f compose.yaml -f compose.gpu.yaml --profile app --profile ai up -d   # EC2 배포
+
+name: battery-inspection
+
+services:
+  # =====================================================================
+  # Presentation
+  # =====================================================================
+  frontend:
+    profiles: [app]
+    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-frontend:${IMAGE_TAG:-latest}
+    container_name: battery-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"    # 유일한 외부 공개 포트. EC2 보안그룹 80/443만 개방
+    depends_on:
+      backend:
+        condition: service_started
+    networks: [battery-net]
+    # nginx 역할 3가지: 정적 번들 서빙 · /api → backend:8080 프록시
+    #                   · /ws → backend:8080 WebSocket 업그레이드 프록시
+    # nginx.conf 정본 = 이 레포의 templates/nginx.conf. FE 이미지가 포함해야 한다.
+    # VITE_* 는 번들 시점 문자열 치환이다. 여기 environment: 로는 주입되지 않는다.
+    # FE 이미지 빌드 시 docker build --build-arg VITE_API_BASE_URL=/api 로 넣는다.
+
+  # =====================================================================
+  # Application
+  # =====================================================================
+  backend:
+    profiles: [app]
+    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-backend:${IMAGE_TAG:-latest}
+    container_name: battery-backend
+    restart: unless-stopped
+    # module-api. FE 대상 REST + WebSocket + 인증 + 시뮬레이션 오케스트레이션.
+    # 모델 서버(ai-infer·vlm)를 직접 호출하지 않는다. module-ai 를 거친다.
+    environment:
+      # module-api → module-ai 호출 주소.
+      # 현재 BE 코드는 ReportService 에 http://localhost:8081 을 하드코딩하고 있다.
+      # 컨테이너 안에서 localhost 는 자기 자신이므로 그대로 두면 리포트 생성이 전부 실패한다.
+      # BE 가 이 값을 프로퍼티로 빼면 아래 변수가 살아난다.
+      BACKEND_AI_BASE_URL: ${BACKEND_AI_BASE_URL:-http://backend-ai:8081}
+
+      # DB = Supabase. 접속 URL·계정은 application.yml 에 있고 비밀번호만 주입한다.
+      DB_PASSWORD: ${DB_PASSWORD}
+
+      # 회원가입 이메일 인증(Gmail SMTP). 계약 [실행/환경변수]에 없는 변수다. 등재 필요.
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+
+      # Redis 가 죽어도 BE 는 산다. depends_on 하드 의존 금지.
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      # 타임아웃을 지정하지 않으면 기본값이 60초라 캐시 장애 시 화면이 60초 멈춘다.
+      # 캐시 장애 격리 기준(1초 이내 응답)을 통과하려면 이 두 값이 반드시 있어야 한다.
+      # 현재 BE application.yml 에 이 설정이 없다. 기준 미달 상태다.
+      SPRING_DATA_REDIS_TIMEOUT: ${REDIS_COMMAND_TIMEOUT:-300ms}
+      SPRING_DATA_REDIS_CONNECT_TIMEOUT: ${REDIS_CONNECT_TIMEOUT:-200ms}
+
+      # 스토리지 = AWS S3 단독. 개발·배포 모두 같다.
+      # S3_ENDPOINT 는 비운다. 비어 있으면 SDK 가 리전 기본 엔드포인트를 쓴다.
+      # 주의: BE 코드는 이 값이 빈 문자열이면 endpointOverride 를 호출하지 않아야 한다.
+      #       빈 URI 로 override 하면 기동 시점에 터진다.
+      # 주의: BE 에 아직 S3·presigned 구현이 없다. 아래 변수는 구현 시점에 살아난다.
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_REGION: ${S3_REGION:-ap-northeast-2}
+
+      JWT_SECRET: ${JWT_SECRET}
+      JAVA_TOOL_OPTIONS: "-Xmx1g"    # RAM 예산 고정 (16GB 호스트)
+    networks: [battery-net]
+    # 포트 미게시. 외부 노출은 frontend 의 nginx 를 통해서만 한다.
+
+  backend-ai:
+    profiles: [app]
+    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-backend-ai:${IMAGE_TAG:-latest}
+    container_name: battery-backend-ai
+    restart: unless-stopped
+    # module-ai. 모델 서버 연동 전담. vlm(8001) 과 ai-infer(8000) 를 둘 다 붙인다.
+    # 현재 구현된 것은 vlm 연동뿐이다(LlmWebClient·LlmAsyncService·ReportRetryScheduler).
+    # ai-infer 호출은 구현 중이다.
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+
+      # vlm. 현재 BE 프로퍼티 이름이 ai-server.base-url 이라 AI_SERVER_URL 로 주입한다.
+      # 모델 서버가 둘이 되면 base-url 하나로는 부족하다.
+      # BE 가 vlm.base-url / ai-infer.base-url 두 개로 나눈 뒤 아래 VLM_BASE_URL 로 바꾼다.
+      AI_SERVER_URL: ${VLM_BASE_URL:-http://vlm:8001}
+
+      # ai-infer. 호출 코드가 생기면 살아난다.
+      AI_BASE_URL: ${AI_BASE_URL:-http://ai-infer:8000}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-15}     # 초과 시 판정 FAIL, 배치는 계속
+      AI_POOL_SIZE: ${AI_POOL_SIZE:-4}                  # 배치 하나 안의 셀 동시 호출 상한. 잠정값, 실측 후 확정
+      LLM_POOL_SIZE: ${LLM_POOL_SIZE:-2}                # 생성 요청 동시 실행 상한
+
+      # 추론 클라이언트 인터페이스의 구현체를 고르는 스위치.
+      # 계약 [실행/환경변수]는 이 변수를 backend 소속으로 적어 두었으나,
+      # 추론 클라이언트가 module-ai 에 있으므로 여기가 실제 자리다. 계약 개정 대상.
+      SERVING_MODE: ${SERVING_MODE:-live}               # live | replay
+    networks: [battery-net]
+
+  ai-infer:
+    profiles: [ai]
+    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-ai-infer:${IMAGE_TAG:-latest}
+    container_name: battery-ai-infer
+    restart: unless-stopped
+    environment:
+      DEVICE: ${DEVICE:-cuda}        # cuda | cpu — GPU 없는 개발자는 cpu (느리지만 뜬다)
+      # 추론 이미지는 BE 가 발급한 presigned URL 로 받는다.
+      # 아래 S3 자격증명은 기동 시 models/ 에서 가중치를 pull 하는 용도로만 쓴다.
+      # 전용 IAM 사용자를 쓴다. 읽기 전용 + models/ 프리픽스로 범위를 좁힌다.
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_MODELS_ACCESS_KEY:-${S3_ACCESS_KEY}}
+      S3_SECRET_KEY: ${S3_MODELS_SECRET_KEY:-${S3_SECRET_KEY}}
+      S3_REGION: ${S3_REGION:-ap-northeast-2}
+      MODEL_CT_KEY: ${MODEL_CT_KEY:-models/ct.pt}
+      MODEL_RGB_KEY: ${MODEL_RGB_KEY:-models/rgb.pt}
+    healthcheck:
+      # 두 모델(CT·RGB) 로드 확인. 미로드 시 503.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s             # 기동 시 1회 모델 로드 + 워밍업
+    networks: [battery-net]
+    # 포트 미게시. BE 가 내부망에서 http://ai-infer:8000 으로만 호출한다.
+
+  ai-infer-stub:
+    profiles: [stub]
+    build: ./stub
+    container_name: battery-ai-infer-stub
+    restart: unless-stopped
+    # GPU 없는 FE·BE 개발자용 고정 응답 서버.
+    # 사용법: .env 에서 AI_BASE_URL=http://ai-infer-stub:8000
+    environment:
+      STUB_LATENCY_MS: ${STUB_LATENCY_MS:-800}   # 라이브 추론 지연 흉내
+      STUB_REJECT_RATE: ${STUB_REJECT_RATE:-0.3}
+    networks: [battery-net]
+
+  vlm:
+    profiles: [ai, llm]              # ai 와 함께, 또는 --profile llm 으로 단독 기동
+    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-vlm:${IMAGE_TAG:-latest}
+    container_name: battery-vlm
+    restart: unless-stopped
+    environment:
+      DEVICE: ${DEVICE:-cuda}
+      VLM_MODEL_ID: ${VLM_MODEL_ID}                    # 모델 교체는 이 값으로만 한다
+      VLM_QUANTIZATION: ${VLM_QUANTIZATION:-4bit}      # none | 4bit | 8bit
+      VLM_DTYPE: ${VLM_DTYPE:-fp16}                    # fp16 | bf16 — T4 는 bf16 미지원이라 배포 기본은 fp16
+      HF_HOME: /cache/huggingface
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - vlm-cache:/cache/huggingface  # 가중치 재다운로드 방지. 컨테이너를 다시 만들어도 유지된다
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s             # 최초 기동은 가중치 다운로드가 포함돼 오래 걸린다
+    networks: [battery-net]
+    # 주의: ports 를 게시하지 마라. 인증이 없는 추론 서버가 그대로 노출된다.
+    #       로컬에서 편하다는 이유로 열어두면 배포 형상에 그대로 따라간다. 내부망 전용.
+
+  # =====================================================================
+  # Data — 프로파일 없음(항상 기동)
+  # =====================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: battery-redis
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [battery-net]
+    # 용도: 대시보드 status 캐시 전용. writer 는 BE 단독이다.
+    # --save "" : 영속화를 끈다. Redis 에만 존재하는 데이터는 없다. DB 가 SSOT 다.
+    # 주의: ports 를 게시하지 마라. 인증이 없다. 노출된 Redis 는 CONFIG SET dir + SAVE 로
+    #       임의 파일 쓰기가 가능해 서버가 장악된다. 내부망 전용.
+    #       로컬 디버깅은 docker compose exec redis redis-cli 로 한다.
+
+networks:
+  battery-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  vlm-cache:

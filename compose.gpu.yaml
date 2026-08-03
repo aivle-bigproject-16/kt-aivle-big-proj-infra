@@ -1,0 +1,40 @@
+# GPU 장치 예약 오버레이 — compose.yaml 위에 덧씌운다.
+#
+# 왜 분리했나:
+#   deploy.resources.reservations.devices 블록이 compose.yaml 안에 있으면
+#   NVIDIA 런타임이 없는 머신에서 파싱 단계부터 실패한다. GPU 없는 FE·BE 개발자가
+#   ai-infer 를 띄우지 않아도 막힌다. 그래서 GPU 배선만 이 파일로 뺐다.
+#
+# 전제:
+#   - NVIDIA 드라이버 + nvidia-container-toolkit 설치됨
+#     (EC2 Deep Learning AMI 는 사전 설치. 로컬 4070 Ti 는 수동 설치 필요)
+#   - 확인: docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+#
+# 사용:
+#   docker compose -f compose.yaml -f compose.gpu.yaml --profile app --profile ai up -d
+#
+# GPU 공유:
+#   ai-infer 와 vlm 이 같은 GPU 1장을 쓴다. CUDA 는 다중 프로세스 접근을 허용한다(배타 락 없음).
+#   VRAM 예산은 아직 실측 전이다. 분류기 + YOLO×2 + VLM 동시 상주 피크를 재야
+#   인스턴스 사양을 확정할 수 있다. 그 전까지 여기 숫자를 계약으로 옮기지 않는다.
+#   VLM 정밀도는 VLM_QUANTIZATION · VLM_DTYPE 에 달려 있다. 같은 모델도 설정이 다르면
+#   VRAM 사용량이 달라지므로, 실측표에 측정 환경을 함께 적는다.
+
+services:
+  ai-infer:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  vlm:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

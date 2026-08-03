@@ -1,9 +1,23 @@
 # ── 시크릿 (절대 커밋 금지) ──
-.env
+# .env* 로 넓게 막는다. .env.bak.YYYYMMDD 같은 사본이 커밋되는 사고를 막기 위함.
+.env*
+!.env.example
 *.pem
 *.key
 credentials.json
 token.json
+
+# ── Resilio 동기화 충돌 사본 ──
+# 두 노트북이 같은 파일을 고치면 `이름.1.확장자` 로 떨어진다. 정본이 아니므로 커밋하지 않는다.
+*.1.yaml
+*.1.yml
+*.1.conf
+*.1.json
+*.1.py
+*.1.md
+*.1.txt
+*.1.sh
+.1.env
 
 # ── 데이터/볼륨 ──
 data/
