@@ -175,6 +175,7 @@ services:
     environment:
       STUB_LATENCY_MS: ${STUB_LATENCY_MS:-800}   # 라이브 추론 지연 흉내
       STUB_REJECT_RATE: ${STUB_REJECT_RATE:-0.3}
+      STUB_FAIL_RATE: ${STUB_FAIL_RATE:-0.0}      # FAIL 수신 경로 시험용(기본 비활성)
     networks: [battery-net]
 
   vlm:
