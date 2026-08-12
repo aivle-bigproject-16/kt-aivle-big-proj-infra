@@ -25,10 +25,24 @@
 #    런타임 HTTP 호출이지 기동 의존이 아니다. *_BASE_URL 환경변수로 붙는다.
 #    GPU 없는 FE·BE 개발자도 backend 를 띄울 수 있어야 한다.
 #
-# --- 아직 존재하지 않는 것 (기동 전 선행 과제) -------------------------------
-#   - BE Dockerfile 없음 (module-api·module-ai 둘 다)
-#   - FE Dockerfile·nginx.conf 없음 (FE 레포에 없다. templates/nginx.conf 를 넣어야 한다)
-#   - 따라서 아래 ghcr.io 이미지는 아직 하나도 존재하지 않는다. 빌드·푸시가 인프라 1번 과제다.
+# --- 레지스트리 (2026-08-12 변경) --------------------------------------------
+# GHCR 에서 ECR 로 옮겼다. EC2 가 같은 리전·같은 계정에서 받으므로 pull 이 빠르고,
+# 인스턴스 프로파일로 인증되어 호스트에 액세스 키를 두지 않아도 된다.
+# 이미지 주소는 ${ECR_REGISTRY}/<레포명>:<태그> 형태다.
+#
+# --- 기동 전 선행 과제 (2026-08-12 갱신) -------------------------------------
+#   - BE Dockerfile 있음. MODULE 빌드 인자로 module-api / module-ai 를 고른다
+#   - FE Dockerfile 있음. nginx.conf 정본은 FE 레포의 docker/nginx.conf 다
+#   - ai-infer 이미지는 ECR 에 이미 있다 (태그 backend-contract-7b7980e)
+#   - frontend · backend · backend-ai · vlm 4종은 아직 굽지 않았다
+#
+# --- 미해결 (이 파일로는 고칠 수 없다. BE 수정이 필요하다) --------------------
+#   module-ai 는 프로퍼티 ai-server.base-url 하나를 두 클라이언트가 나눠 쓴다.
+#     AiServerForwardService  -> POST {base-url}/ai/cells/analyze          = ai-infer(8000)
+#     LlmWebClient            -> POST {base-url}/vlm/reports/individual    = vlm(8001)
+#   서로 다른 두 서버를 값 하나가 가리켜야 하므로 어느 쪽으로 주든 한쪽이 404 가 된다.
+#   BE 가 ai-server.base-url 과 vlm.base-url 로 분리해야 해소된다.
+#   그 전까지 아래 AI_SERVER_URL 은 셀 분석과 리포트 중 하나만 살린다.
 #
 # --- 기동 예시 ---------------------------------------------------------------
 #   docker compose up -d                                  # redis 만
@@ -46,7 +60,7 @@ services:
   # =====================================================================
   frontend:
     profiles: [app]
-    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-frontend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-frontend:${IMAGE_TAG:-latest}
     container_name: battery-frontend
     restart: unless-stopped
     ports:
@@ -55,9 +69,14 @@ services:
       backend:
         condition: service_started
     networks: [battery-net]
-    # nginx 역할 3가지: 정적 번들 서빙 · /api → backend:8080 프록시
-    #                   · /ws → backend:8080 WebSocket 업그레이드 프록시
-    # nginx.conf 정본 = 이 레포의 templates/nginx.conf. FE 이미지가 포함해야 한다.
+    # nginx 역할 4가지: 정적 번들 서빙(SPA 폴백)
+    #                   · /api      → backend:8080  접두어를 벗겨서 전달
+    #                   · /ws       → backend:8080  접두어 유지. WebSocket 업그레이드
+    #                   · /ai/logs  → ai-infer:8000 접두어를 벗겨서 전달. SSE
+    # 접두어를 벗기는 규칙이 경로마다 다르다. BE 라우트에 /api 접두어가 없기 때문이다.
+    # nginx.conf 정본 = FE 레포의 docker/nginx.conf. FE 이미지가 포함한다.
+    # ai-infer 는 --profile ai 일 때만 존재하므로 nginx 가 upstream 을 변수로 잡아
+    # 요청 시점에 DNS 를 푼다. 없으면 /ai/logs 만 502 가 되고 화면은 뜬다.
     # VITE_* 는 번들 시점 문자열 치환이다. 여기 environment: 로는 주입되지 않는다.
     # FE 이미지 빌드 시 docker build --build-arg VITE_API_BASE_URL=/api 로 넣는다.
 
@@ -66,17 +85,29 @@ services:
   # =====================================================================
   backend:
     profiles: [app]
-    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-backend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend:${IMAGE_TAG:-latest}
     container_name: battery-backend
     restart: unless-stopped
     # module-api. FE 대상 REST + WebSocket + 인증 + 시뮬레이션 오케스트레이션.
     # 모델 서버(ai-infer·vlm)를 직접 호출하지 않는다. module-ai 를 거친다.
     environment:
       # module-api → module-ai 호출 주소.
-      # 현재 BE 코드는 ReportService 에 http://localhost:8081 을 하드코딩하고 있다.
-      # 컨테이너 안에서 localhost 는 자기 자신이므로 그대로 두면 리포트 생성이 전부 실패한다.
-      # BE 가 이 값을 프로퍼티로 빼면 아래 변수가 살아난다.
-      BACKEND_AI_BASE_URL: ${BACKEND_AI_BASE_URL:-http://backend-ai:8081}
+      # 변수 이름이 반드시 AI_GATEWAY_URL 이어야 한다.
+      # application.yml 이 ai-gateway.base-url: ${AI_GATEWAY_URL:http://localhost:8081} 로 읽는다.
+      # 이전에 BACKEND_AI_BASE_URL 로 주고 있었는데 그 이름은 아무도 읽지 않아
+      # 기본값 localhost:8081 로 떨어졌다. 컨테이너 안에서 localhost 는 자기 자신이므로
+      # 리포트 생성이 전부 실패했다. 증상이 "리포트만 안 나옴" 이라 원인 추적이 오래 걸린다.
+      AI_GATEWAY_URL: ${AI_GATEWAY_URL:-http://backend-ai:8081}
+
+      # ai-infer 가 셀 분석을 끝내면 이 주소로 결과를 되돌려준다.
+      # ai-infer 는 이 값과 요청에 담긴 callbackUrl 이 다르면 400 을 낸다.
+      # 따라서 module-api · ai-infer 양쪽에 같은 값을 넣어야 한다.
+      BACKEND_CALLBACK_URL: ${BACKEND_CALLBACK_URL:-http://backend:8080/internal/ai/callbacks/cell}
+
+      # module-api · module-ai · ai-infer 세 곳이 공유하는 내부 호출 인증 키.
+      # ai-infer 는 X-Internal-Api-Key 헤더로 검사하고 불일치 시 401 을 낸다.
+      # 값이 없으면 내부 호출이 전부 막힌다. .env 에 반드시 채운다.
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
 
       # DB = Supabase. 접속 URL·계정은 application.yml 에 있고 비밀번호만 주입한다.
       DB_PASSWORD: ${DB_PASSWORD}
@@ -112,19 +143,26 @@ services:
 
   backend-ai:
     profiles: [app]
-    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-backend-ai:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend-ai:${IMAGE_TAG:-latest}
     container_name: battery-backend-ai
     restart: unless-stopped
     # module-ai. 모델 서버 연동 전담. vlm(8001) 과 ai-infer(8000) 를 둘 다 붙인다.
-    # 현재 구현된 것은 vlm 연동뿐이다(LlmWebClient·LlmAsyncService·ReportRetryScheduler).
-    # ai-infer 호출은 구현 중이다.
+    # 두 경로 모두 코드가 있다.
+    #   셀 분석  AiServerForwardService -> POST {ai-server.base-url}/ai/cells/analyze
+    #   리포트    LlmWebClient           -> POST {ai-server.base-url}/vlm/reports/individual · /daily
     environment:
       DB_PASSWORD: ${DB_PASSWORD}
 
-      # vlm. 현재 BE 프로퍼티 이름이 ai-server.base-url 이라 AI_SERVER_URL 로 주입한다.
-      # 모델 서버가 둘이 되면 base-url 하나로는 부족하다.
-      # BE 가 vlm.base-url / ai-infer.base-url 두 개로 나눈 뒤 아래 VLM_BASE_URL 로 바꾼다.
-      AI_SERVER_URL: ${VLM_BASE_URL:-http://vlm:8001}
+      # 주의: 이 값 하나가 위 두 클라이언트에 동시에 쓰인다.
+      # ai-infer 로 주면 리포트가 404, vlm 으로 주면 셀 분석이 404 다.
+      # BE 가 프로퍼티를 둘로 분리하기 전까지는 살릴 쪽을 골라야 한다.
+      #   http://ai-infer:8000  = 셀 분석을 살린다 (판정 파이프라인 우선)
+      #   http://vlm:8001       = 리포트를 살린다
+      # 기본값은 셀 분석이다. 판정이 되어야 replay 폴백용 원본이 DB 에 쌓인다.
+      AI_SERVER_URL: ${AI_SERVER_URL:-http://ai-infer:8000}
+
+      # 내부 호출 인증 키. module-api · ai-infer 와 같은 값이어야 한다.
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
 
       # ai-infer. 호출 코드가 생기면 살아난다.
       AI_BASE_URL: ${AI_BASE_URL:-http://ai-infer:8000}
@@ -140,21 +178,68 @@ services:
 
   ai-infer:
     profiles: [ai]
-    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-ai-infer:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-ai-infer:${AI_INFER_TAG:-backend-contract-7b7980e}
     container_name: battery-ai-infer
     restart: unless-stopped
+    # 변수 이름은 ai-infer 의 app/core/settings.py 가 정본이다.
+    # 종전에 이 블록이 쓰던 DEVICE · S3_* · MODEL_CT_KEY · MODEL_RGB_KEY 는
+    # ai-infer 가 하나도 읽지 않는다. 전부 무시되고 기본값으로 떨어졌다.
+    # 특히 두 가지가 위험했다.
+    #   INFERENCE_MODE 미지정 -> 기본값 stub. 배포에서 가짜 판정이 나간다
+    #   ONNX_DEVICE    미지정 -> 기본값 cpu.  GPU 를 붙여놓고 CPU 로 돈다
     environment:
-      DEVICE: ${DEVICE:-cuda}        # cuda | cpu — GPU 없는 개발자는 cpu (느리지만 뜬다)
-      # 추론 이미지는 BE 가 발급한 presigned URL 로 받는다.
-      # 아래 S3 자격증명은 기동 시 models/ 에서 가중치를 pull 하는 용도로만 쓴다.
-      # 전용 IAM 사용자를 쓴다. 읽기 전용 + models/ 프리픽스로 범위를 좁힌다.
-      S3_ENDPOINT: ${S3_ENDPOINT:-}
-      S3_BUCKET: ${S3_BUCKET}
-      S3_ACCESS_KEY: ${S3_MODELS_ACCESS_KEY:-${S3_ACCESS_KEY}}
-      S3_SECRET_KEY: ${S3_MODELS_SECRET_KEY:-${S3_SECRET_KEY}}
-      S3_REGION: ${S3_REGION:-ap-northeast-2}
-      MODEL_CT_KEY: ${MODEL_CT_KEY:-models/ct.pt}
-      MODEL_RGB_KEY: ${MODEL_RGB_KEY:-models/rgb.pt}
+      # stub | ct-quality-onnx | ct-onnx | quality-onnx | rgb-onnx | onnx
+      # 배포는 onnx 다. stub 으로 두면 고정 응답이 나가고 아무도 눈치채지 못한다.
+      INFERENCE_MODE: ${INFERENCE_MODE:-onnx}
+      ONNX_DEVICE: ${ONNX_DEVICE:-cuda}          # cpu | cuda
+
+      # 모델 파일 경로. 컨테이너 안의 경로이지 S3 키가 아니다.
+      # ai-infer 는 기동 시 S3 에서 가중치를 내려받지 않는다. 호스트에 미리 받아
+      # /models 로 마운트해야 한다(아래 volumes). 번들 정본은 S3 의
+      # models/ai-infer/onnx-20260809-01/ 이고 목록·체크섬은 레포의
+      # deployment/model-manifest.json 에 있다.
+      # 내려받기 = scripts/upload-model-bundle.ps1 의 역방향, 검증 = verify-model-manifest.ps1
+      # 주의: CT 결함 모델만 파일명이 settings.py 의 기본값과 다르다.
+      #       S3 키는 defect_ct.onnx 인데 매니페스트가 정한 로컬 파일명은
+      #       defect_ct.torch211.onnx 다. 기본값 그대로 두면 파일을 못 찾는다.
+      CT_QUALITY_MODEL_PATH: /models/quality_ct.onnx
+      CT_DEFECT_MODEL_PATH: /models/defect_ct.torch211.onnx
+      RGB_QUALITY_MODEL_PATH: /models/quality_rgb.onnx
+      RGB_DEFECT_MODEL_DIR: /models/rgb_owlv2_onnx
+
+      # CT 후처리. 매니페스트의 runtime 값과 같아야 한다. 다르면 판정이 달라진다.
+      CT_POSTPROCESS_TYPE: ${CT_POSTPROCESS_TYPE:-NMS}                    # NMS | GREEDYNMM
+      CT_POSTPROCESS_MATCH_METRIC: ${CT_POSTPROCESS_MATCH_METRIC:-IOS}    # IOU | IOS
+      CT_POSTPROCESS_MATCH_THRESHOLD: ${CT_POSTPROCESS_MATCH_THRESHOLD:-0.44}
+
+      # 판정 임계값. 기본값은 모델 검증 시점의 운영점이다. 함부로 바꾸면 판정이 흔들린다.
+      # CT_QUALITY_THRESHOLD 는 확률이 아니라 로짓이라 음수를 받는다.
+      CT_QUALITY_THRESHOLD: ${CT_QUALITY_THRESHOLD:--0.6227158308029175}
+      CT_DEFECT_CONF_THRESHOLD: ${CT_DEFECT_CONF_THRESHOLD:-0.05}
+      RGB_QUALITY_FAIL_THRESHOLD: ${RGB_QUALITY_FAIL_THRESHOLD:-0.3}
+
+      # 이미지는 BE 가 발급한 presigned URL 로 ai-infer 가 직접 GET 한다.
+      IMAGE_DOWNLOAD_TIMEOUT_SECONDS: ${IMAGE_DOWNLOAD_TIMEOUT_SECONDS:-10}
+      IMAGE_MAX_BYTES: ${IMAGE_MAX_BYTES:-20971520}
+
+      # 내부 호출 인증. module-ai 가 X-Internal-Api-Key 로 보내는 값과 같아야 한다.
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
+
+      # 분석이 끝나면 여기로 결과를 되돌려준다.
+      # 요청에 담긴 callbackUrl 이 이 값과 다르면 ai-infer 가 400 을 낸다.
+      # module-api 의 BACKEND_CALLBACK_URL 과 반드시 같은 값이어야 한다.
+      BACKEND_CALLBACK_URL: ${BACKEND_CALLBACK_URL:-http://backend:8080/internal/ai/callbacks/cell}
+      CALLBACK_TIMEOUT_SECONDS: ${CALLBACK_TIMEOUT_SECONDS:-10}
+      CALLBACK_MAX_ATTEMPTS: ${CALLBACK_MAX_ATTEMPTS:-3}
+
+      # 동시 분석 워커와 대기열. g6e.xlarge 는 vCPU 가 4개뿐이고
+      # CT 의 SAHI 타일링이 CPU 바운드라 여기를 올리면 CPU 가 먼저 포화한다.
+      # 실측 전까지 기본값을 유지한다.
+      CELL_ANALYSIS_WORKERS: ${CELL_ANALYSIS_WORKERS:-1}
+      CELL_ANALYSIS_QUEUE_SIZE: ${CELL_ANALYSIS_QUEUE_SIZE:-4}
+    volumes:
+      # 가중치 번들. 읽기 전용으로 붙인다. 총 약 1.85 GB 다.
+      - ${MODELS_DIR:-./models}:/models:ro
     healthcheck:
       # 두 모델(CT·RGB) 로드 확인. 미로드 시 503.
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
@@ -180,7 +265,7 @@ services:
 
   vlm:
     profiles: [ai, llm]              # ai 와 함께, 또는 --profile llm 으로 단독 기동
-    image: ghcr.io/${GHCR_ORG:-aivle-bigproject-16}/kt-aivle-big-proj-vlm:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-vlm:${IMAGE_TAG:-latest}
     container_name: battery-vlm
     restart: unless-stopped
     environment:
