@@ -4,11 +4,17 @@ set -u
 
 header_file=$(mktemp)
 error_file=$(mktemp)
-trap 'rm -f "$header_file" "$error_file"' EXIT HUP INT TERM
+cookie_file=$(mktemp)
+trap 'rm -f "$header_file" "$error_file" "$cookie_file"' EXIT HUP INT TERM
+
+if ! login_cookie_jar "$cookie_file"; then
+    result FAIL "could not log in with the verification account"
+fi
 
 started=$(date +%s)
 code=$(curl -sS --http1.1 --max-time 6 \
     -D "$header_file" -o /dev/null -w '%{http_code}' \
+    -b "$cookie_file" \
     -H 'Connection: Upgrade' \
     -H 'Upgrade: websocket' \
     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \

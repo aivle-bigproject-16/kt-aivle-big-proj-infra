@@ -68,6 +68,52 @@ http_code() {
     curl -sS -o /dev/null -w '%{http_code}' "$@" "$url"
 }
 
+json_escape() {
+    local value=$1
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf '%s' "$value"
+}
+
+login_cookie_jar() {
+    local cookie_file=$1 email password escaped_email escaped_password body_file code
+
+    email=${VERIFY_LOGIN_EMAIL:-}
+    password=${VERIFY_LOGIN_PASSWORD:-}
+    if [ -z "$email" ] || [ -z "$password" ]; then
+        log_err "VERIFY_LOGIN_EMAIL and VERIFY_LOGIN_PASSWORD are required for authenticated checks"
+        return 2
+    fi
+
+    escaped_email=$(json_escape "$email")
+    escaped_password=$(json_escape "$password")
+    body_file=$(mktemp) || return 1
+
+    code=$(printf '{"email":"%s","password":"%s"}' "$escaped_email" "$escaped_password" | \
+        curl -sS --max-time 15 -o "$body_file" -w '%{http_code}' \
+            -c "$cookie_file" \
+            -H 'Content-Type: application/json' \
+            --data-binary @- \
+            "$BASE_URL/api/auth/login" 2>/dev/null || true)
+
+    rm -f "$body_file"
+    case "$code" in
+        2??) ;;
+        *)
+            log_err "verification login returned HTTP ${code:-000}"
+            return 1
+            ;;
+    esac
+
+    if ! grep -q $'\taccess_token\t' "$cookie_file" 2>/dev/null; then
+        log_err "verification login succeeded without an access_token cookie"
+        return 1
+    fi
+}
+
 result() {
     local status=$1 reason code
     shift
@@ -109,4 +155,4 @@ log_err() {
 }
 
 export REPO_ROOT ENV_FILE BASE_URL
-export -f compose svc_state wait_for logs_since http_code result redact log_info log_warn log_err
+export -f compose svc_state wait_for logs_since http_code json_escape login_cookie_jar result redact log_info log_warn log_err

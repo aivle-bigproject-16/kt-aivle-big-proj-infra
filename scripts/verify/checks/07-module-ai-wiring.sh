@@ -7,11 +7,18 @@ if ! compose exec -T backend-ai sh -c '[ "$LLM_SERVER_URL" = "http://vlm:8001" ]
 fi
 
 body_file=$(mktemp)
-trap 'rm -f "$body_file"' EXIT HUP INT TERM
+cookie_file=$(mktemp)
+trap 'rm -f "$body_file" "$cookie_file"' EXIT HUP INT TERM
+
+if ! login_cookie_jar "$cookie_file"; then
+    result FAIL "could not log in with the verification account"
+fi
+
 started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 report_date=$(date -u '+%Y-%m-%d')
 
 code=$(curl -sS --max-time 15 -o "$body_file" -w '%{http_code}' \
+    -b "$cookie_file" \
     -H 'Content-Type: application/json' \
     --data "{\"reportDate\":\"$report_date\"}" \
     "$BASE_URL/api/reports/daily" 2>/dev/null || true)

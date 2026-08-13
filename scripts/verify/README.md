@@ -18,8 +18,14 @@ docker compose --env-file .env -f compose.yaml -f compose.gpu.yaml --profile app
 
 ```bash
 cd scripts/verify
+read -rp 'Verification email: ' VERIFY_LOGIN_EMAIL
+read -rsp 'Verification password: ' VERIFY_LOGIN_PASSWORD && echo
+export VERIFY_LOGIN_EMAIL VERIFY_LOGIN_PASSWORD
 bash run-all.sh
+unset VERIFY_LOGIN_EMAIL VERIFY_LOGIN_PASSWORD
 ```
+
+5·7·10번은 인증이 필요한 `/ws/sim`, `/api/reports/daily`, `/api/sim`을 호출하므로 미리 생성된 검증 전용 계정이 필요합니다. 이메일과 비밀번호는 각각 `VERIFY_LOGIN_EMAIL`, `VERIFY_LOGIN_PASSWORD`로 받습니다. 로그인 응답의 HttpOnly `access_token` 쿠키는 각 검증의 임시 cookie jar에만 저장되고 검증 종료 시 삭제되며, 비밀번호와 쿠키는 출력하거나 보고서에 기록하지 않습니다.
 
 특정 번호만 실행하려면 `bash run-all.sh --only 1,3,4`를 사용하고, 특정 번호를 제외하려면 `bash run-all.sh --skip 8,9`를 사용합니다. 준비 상태 폴링을 생략하려면 `--no-wait`를 사용합니다. Redis를 실제로 중지하는 10번 검증은 `bash run-all.sh --allow-mutate`처럼 명시적으로 허용해야 합니다. 하네스는 종료 신호나 중간 실패가 발생해도 EXIT 트랩에서 redis를 다시 시작하고 healthy 상태를 확인합니다.
 
@@ -55,7 +61,7 @@ unset VERIFY_PRESIGNED_URL
 
 7번은 backend `cf0dbbc`까지 XFAIL이었으나 `0824846`(BE PR #15)에서 해소되어 이제 PASS를 기대합니다. `ReportService`가 하드코딩된 `http://localhost:8081` 대신 `aiGatewayRestClient`를 주입받고, 그 빈이 `ai-gateway.base-url`을 통해 `AI_GATEWAY_URL`을 읽습니다. Compose가 `http://backend-ai:8081`을 주입하므로 호출이 성립합니다. 따라서 `Failed to trigger LLM generation` 로그가 보이면 그것은 알려진 결함이 아니라 실제 배선 또는 인증 문제이며, 검증은 이를 FAIL로 판정합니다. `cf0dbbc` 이전 이미지를 일부러 검증할 때만 `BACKEND_PRE_0824846=1`을 주어 XFAIL로 되돌릴 수 있습니다.
 
-10번은 Option B 결정에 따라 실제 PASS/FAIL 검증입니다. BE `origin/main`의 `26c801f`(변경 커밋 `ccd9ae3`)에서 `SimulationSnapshotStore.find()`는 `RedisConnectionFailureException`을 캐시 미스로 처리하거나 데이터베이스 또는 빈 스냅샷으로 대체하지 않고 HTTP 503 응답으로 변환합니다. 따라서 Redis 중단 상태에서 `/api/sim`이 1초 이내에 HTTP 5xx 실패 응답을 끝까지 반환하면 PASS하고, 요청이 멈추거나 시간 초과되거나 연결이 끊기거나 5xx가 아닌 응답을 반환하면 FAIL합니다. 이 검증은 `--allow-mutate`가 없으면 `requires --allow-mutate` 사유로 SKIP합니다.
+10번은 Option B 결정에 따라 실제 PASS/FAIL 검증입니다. BE `origin/main`의 `26c801f`(변경 커밋 `ccd9ae3`)에서 `SimulationSnapshotStore.find()`는 `RedisConnectionFailureException`을 캐시 미스로 처리하거나 데이터베이스 또는 빈 스냅샷으로 대체하지 않고 HTTP 503 응답으로 변환합니다. Redis 컨테이너 완전 중단 시 Docker DNS 실패 감지에 약 5초가 걸리는 것이 확인되어, BE가 전체 호출 시간 예산을 결정할 때까지 `/api/sim`이 10초 이내에 HTTP 5xx 실패 응답을 끝까지 반환하면 임시 PASS로 판정합니다. 요청이 멈추거나 10초에 시간 초과되거나 연결이 끊기거나 5xx가 아닌 응답을 반환하면 FAIL합니다. 이 검증은 `--allow-mutate`가 없으면 `requires --allow-mutate` 사유로 SKIP합니다.
 
 ## 8번이 필요로 하는 서명 URL
 
