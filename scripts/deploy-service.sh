@@ -30,6 +30,21 @@ Environment:
 EOF
 }
 
+run_post_deploy_benchmark() {
+  local trigger="$1"
+
+  if [[ ! -x /usr/local/bin/battery-post-deploy-benchmark ]]; then
+    log "benchmark runner is not installed; skipping"
+    return 0
+  fi
+
+  if /usr/local/bin/battery-post-deploy-benchmark --trigger "$trigger"; then
+    log "post-deploy benchmark succeeded"
+  else
+    log "WARNING: post-deploy benchmark failed; deployment remains active"
+  fi
+}
+
 env_value() {
   local key="$1"
   local env_file="$2"
@@ -192,7 +207,8 @@ main() {
   old_tag="$(env_value "$TAG_KEY" "$env_file")"
 
   if [[ "$old_tag" == "$new_tag" ]]; then
-    log "${service} already uses ${new_tag}; nothing to do"
+    log "${service} already uses ${new_tag}; running benchmark only"
+    run_post_deploy_benchmark "${service}@${new_tag}"
     exit 0
   fi
 
@@ -204,6 +220,7 @@ main() {
 
   if deploy_once "$service" "$registry" "$region"; then
     log "deployment succeeded: ${service}@${new_tag}"
+    run_post_deploy_benchmark "${service}@${new_tag}"
     exit 0
   fi
 

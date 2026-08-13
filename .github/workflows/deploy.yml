@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           bash -n scripts/deploy-service.sh
           bash -n scripts/deploy-infra.sh
+          bash -n scripts/post-deploy-benchmark.sh
           docker compose -f compose.yaml -f compose.gpu.yaml config --quiet
 
       - name: Build immutable infra bundle
@@ -48,6 +49,7 @@ jobs:
             compose.gpu.yaml \
             scripts/deploy-service.sh \
             scripts/deploy-infra.sh \
+            scripts/post-deploy-benchmark.sh \
             stub
 
       - name: Configure AWS credentials

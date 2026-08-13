@@ -80,12 +80,13 @@ main() {
   tar -xzf "$archive" -C "$release_dir"
 
   local required_file
-  for required_file in compose.yaml compose.gpu.yaml scripts/deploy-service.sh scripts/deploy-infra.sh; do
+  for required_file in compose.yaml compose.gpu.yaml scripts/deploy-service.sh scripts/deploy-infra.sh scripts/post-deploy-benchmark.sh; do
     [[ -f "$release_dir/$required_file" ]] || die "bundle is missing ${required_file}"
   done
 
   bash -n "$release_dir/scripts/deploy-service.sh"
   bash -n "$release_dir/scripts/deploy-infra.sh"
+  bash -n "$release_dir/scripts/post-deploy-benchmark.sh"
 
   build_compose_command \
     "$deploy_dir" \
@@ -106,11 +107,15 @@ main() {
   cp -a -- "$deploy_dir/compose.yaml" "$backup_dir/compose.yaml"
   cp -a -- "$deploy_dir/compose.gpu.yaml" "$backup_dir/compose.gpu.yaml"
   cp -a -- /usr/local/bin/battery-deploy-service "$backup_dir/battery-deploy-service"
+  if [[ -f /usr/local/bin/battery-post-deploy-benchmark ]]; then
+    cp -a -- /usr/local/bin/battery-post-deploy-benchmark "$backup_dir/battery-post-deploy-benchmark"
+  fi
 
   install -o root -g root -m 0644 "$release_dir/compose.yaml" "$deploy_dir/compose.yaml"
   install -o root -g root -m 0644 "$release_dir/compose.gpu.yaml" "$deploy_dir/compose.gpu.yaml"
   install -o root -g root -m 0755 "$release_dir/scripts/deploy-service.sh" /usr/local/bin/battery-deploy-service
   install -o root -g root -m 0755 "$release_dir/scripts/deploy-infra.sh" /usr/local/bin/battery-deploy-infra
+  install -o root -g root -m 0755 "$release_dir/scripts/post-deploy-benchmark.sh" /usr/local/bin/battery-post-deploy-benchmark
 
   if [[ -d "$release_dir/stub" ]]; then
     mkdir -p "$deploy_dir/stub"
@@ -126,6 +131,11 @@ main() {
   log "reconciling: ${running_services[*]}"
   if "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout 900 "${running_services[@]}"; then
     log "infra deployment succeeded: ${bundle_key}"
+    if /usr/local/bin/battery-post-deploy-benchmark --trigger "infra@${bundle_key#deploy/infra/}"; then
+      log "post-deploy benchmark succeeded"
+    else
+      log "WARNING: post-deploy benchmark failed; deployment remains active"
+    fi
     exit 0
   fi
 
@@ -133,6 +143,9 @@ main() {
   install -o root -g root -m 0644 "$backup_dir/compose.yaml" "$deploy_dir/compose.yaml"
   install -o root -g root -m 0644 "$backup_dir/compose.gpu.yaml" "$deploy_dir/compose.gpu.yaml"
   install -o root -g root -m 0755 "$backup_dir/battery-deploy-service" /usr/local/bin/battery-deploy-service
+  if [[ -f "$backup_dir/battery-post-deploy-benchmark" ]]; then
+    install -o root -g root -m 0755 "$backup_dir/battery-post-deploy-benchmark" /usr/local/bin/battery-post-deploy-benchmark
+  fi
 
   build_compose_command \
     "$deploy_dir" \
