@@ -58,7 +58,7 @@ services:
   # =====================================================================
   frontend:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-frontend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-frontend:${FRONTEND_TAG:?FRONTEND_TAG is required}
     container_name: battery-frontend
     restart: unless-stopped
     ports:
@@ -83,7 +83,7 @@ services:
   # =====================================================================
   backend:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend:${BACKEND_TAG:?BACKEND_TAG is required}
     container_name: battery-backend
     restart: unless-stopped
     # module-api. FE 대상 REST + WebSocket + 인증 + 시뮬레이션 오케스트레이션.
@@ -141,7 +141,7 @@ services:
 
   backend-ai:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend-ai:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend-ai:${BACKEND_AI_TAG:?BACKEND_AI_TAG is required}
     container_name: battery-backend-ai
     restart: unless-stopped
     # module-ai. 모델 서버 연동 전담. vlm(8001) 과 ai-infer(8000) 를 둘 다 붙인다.
@@ -172,7 +172,7 @@ services:
 
   ai-infer:
     profiles: [ai]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-ai-infer:${AI_INFER_TAG:-backend-contract-7b7980e}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-ai-infer:${AI_INFER_TAG:?AI_INFER_TAG is required}
     container_name: battery-ai-infer
     restart: unless-stopped
     # 변수 이름은 ai-infer 의 app/core/settings.py 가 정본이다.
@@ -259,7 +259,7 @@ services:
 
   vlm:
     profiles: [ai, llm]              # ai 와 함께, 또는 --profile llm 으로 단독 기동
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-vlm:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-vlm:${VLM_TAG:?VLM_TAG is required}
     container_name: battery-vlm
     restart: unless-stopped
     environment:
