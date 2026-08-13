@@ -131,7 +131,8 @@ main() {
   log "reconciling: ${running_services[*]}"
   if "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout 900 "${running_services[@]}"; then
     log "infra deployment succeeded: ${bundle_key}"
-    if /usr/local/bin/battery-post-deploy-benchmark --trigger "infra@${bundle_key#deploy/infra/}"; then
+    if /usr/local/bin/battery-post-deploy-benchmark \
+      --trigger "infra@${bundle_key#deploy/infra/}" --suite all; then
       log "post-deploy benchmark succeeded"
     else
       log "WARNING: post-deploy benchmark failed; deployment remains active"

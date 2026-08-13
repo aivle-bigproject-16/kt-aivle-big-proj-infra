@@ -1,0 +1,82 @@
+name: Run production AI benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Benchmark suite
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - inference
+          - vlm
+
+concurrency:
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "825555019742"
+
+      - name: Run benchmark through Systems Manager
+        env:
+          INSTANCE_ID: ${{ vars.AWS_DEPLOY_INSTANCE_ID }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+
+          trigger="manual/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          parameters=$(jq -cn \
+            --arg suite "$SUITE" \
+            --arg trigger "$trigger" \
+            '{Suite: [$suite], Trigger: [$trigger]}')
+
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AivleBigProjectRunBenchmark \
+            --comment "Benchmark $GITHUB_REPOSITORY@$GITHUB_SHA ($SUITE)" \
+            --parameters "$parameters" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          status=Pending
+          for _ in $(seq 1 180); do
+            status=$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || printf 'Pending')
+
+            case "$status" in
+              Success|Cancelled|TimedOut|Failed|Cancelling) break ;;
+            esac
+            sleep 10
+          done
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
+
+          test "$status" = Success

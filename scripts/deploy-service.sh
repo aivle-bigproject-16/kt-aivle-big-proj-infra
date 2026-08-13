@@ -32,13 +32,20 @@ EOF
 
 run_post_deploy_benchmark() {
   local trigger="$1"
+  local suite="$2"
+
+  if [[ "$suite" == "none" ]]; then
+    log "no AI benchmark is associated with ${trigger}; skipping"
+    return 0
+  fi
 
   if [[ ! -x /usr/local/bin/battery-post-deploy-benchmark ]]; then
     log "benchmark runner is not installed; skipping"
     return 0
   fi
 
-  if /usr/local/bin/battery-post-deploy-benchmark --trigger "$trigger"; then
+  if /usr/local/bin/battery-post-deploy-benchmark \
+    --trigger "$trigger" --suite "$suite"; then
     log "post-deploy benchmark succeeded"
   else
     log "WARNING: post-deploy benchmark failed; deployment remains active"
@@ -81,26 +88,31 @@ service_config() {
       TAG_KEY="FRONTEND_TAG"
       CONTAINER_NAME="battery-frontend"
       WAIT_TIMEOUT=180
+      BENCHMARK_SUITE="none"
       ;;
     backend)
       TAG_KEY="BACKEND_TAG"
       CONTAINER_NAME="battery-backend"
       WAIT_TIMEOUT=240
+      BENCHMARK_SUITE="none"
       ;;
     backend-ai)
       TAG_KEY="BACKEND_AI_TAG"
       CONTAINER_NAME="battery-backend-ai"
       WAIT_TIMEOUT=240
+      BENCHMARK_SUITE="none"
       ;;
     ai-infer)
       TAG_KEY="AI_INFER_TAG"
       CONTAINER_NAME="battery-ai-infer"
       WAIT_TIMEOUT=600
+      BENCHMARK_SUITE="inference"
       ;;
     vlm)
       TAG_KEY="VLM_TAG"
       CONTAINER_NAME="battery-vlm"
       WAIT_TIMEOUT=900
+      BENCHMARK_SUITE="vlm"
       ;;
     *)
       die "unsupported service: ${service}"
@@ -207,8 +219,8 @@ main() {
   old_tag="$(env_value "$TAG_KEY" "$env_file")"
 
   if [[ "$old_tag" == "$new_tag" ]]; then
-    log "${service} already uses ${new_tag}; running benchmark only"
-    run_post_deploy_benchmark "${service}@${new_tag}"
+    log "${service} already uses ${new_tag}"
+    run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
     exit 0
   fi
 
@@ -220,7 +232,7 @@ main() {
 
   if deploy_once "$service" "$registry" "$region"; then
     log "deployment succeeded: ${service}@${new_tag}"
-    run_post_deploy_benchmark "${service}@${new_tag}"
+    run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
     exit 0
   fi
 
