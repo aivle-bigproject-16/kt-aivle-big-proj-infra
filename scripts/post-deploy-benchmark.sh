@@ -226,7 +226,6 @@ def generate():
     return elapsed_ms
 
 
-generate()
 values = []
 failures = []
 for index in range(1, 4):
