@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Deploy one Battery Inspection service using an immutable ECR image tag",
+  "parameters": {
+    "Service": {
+      "type": "String",
+      "description": "Compose service to deploy",
+      "allowedValues": [
+        "frontend",
+        "backend",
+        "backend-ai",
+        "ai-infer",
+        "vlm"
+      ],
+      "interpolationType": "ENV_VAR"
+    },
+    "ImageTag": {
+      "type": "String",
+      "description": "Immutable ECR image tag",
+      "allowedPattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+      "interpolationType": "ENV_VAR"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deployService",
+      "inputs": {
+        "timeoutSeconds": "1800",
+        "runCommand": [
+          "exec /usr/local/bin/battery-deploy-service \"$SSM_Service\" \"$SSM_ImageTag\""
+        ]
+      }
+    }
+  ]
+}

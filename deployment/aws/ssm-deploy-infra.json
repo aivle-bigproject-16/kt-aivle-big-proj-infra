@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Deploy a validated Battery Inspection Compose bundle from S3",
+  "parameters": {
+    "BundleKey": {
+      "type": "String",
+      "description": "S3 key containing the immutable infra bundle",
+      "allowedPattern": "^deploy/infra/[0-9a-f]{40}\\.tar\\.gz$",
+      "interpolationType": "ENV_VAR"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deployInfra",
+      "inputs": {
+        "timeoutSeconds": "1800",
+        "runCommand": [
+          "exec /usr/local/bin/battery-deploy-infra \"$SSM_BundleKey\""
+        ]
+      }
+    }
+  ]
+}

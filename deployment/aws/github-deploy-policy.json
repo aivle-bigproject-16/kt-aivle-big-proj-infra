@@ -1,0 +1,56 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrLogin",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PushApplicationImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ],
+      "Resource": [
+        "arn:aws:ecr:ap-northeast-2:825555019742:repository/kt-aivle-big-proj-frontend",
+        "arn:aws:ecr:ap-northeast-2:825555019742:repository/kt-aivle-big-proj-backend",
+        "arn:aws:ecr:ap-northeast-2:825555019742:repository/kt-aivle-big-proj-backend-ai",
+        "arn:aws:ecr:ap-northeast-2:825555019742:repository/kt-aivle-big-proj-ai-infer",
+        "arn:aws:ecr:ap-northeast-2:825555019742:repository/kt-aivle-big-proj-vlm"
+      ]
+    },
+    {
+      "Sid": "RunServiceDeployment",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployService",
+        "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployInfra",
+        "arn:aws:ec2:ap-northeast-2:825555019742:instance/i-0b802c4b90563424f"
+      ]
+    },
+    {
+      "Sid": "PublishInfraBundle",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::kt-aivle-big-proj-kks/deploy/infra/*"
+    },
+    {
+      "Sid": "ReadDeploymentResult",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

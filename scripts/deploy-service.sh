@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly DEFAULT_DEPLOY_DIR="/opt/battery/infra"
+readonly DEFAULT_AWS_REGION="ap-northeast-2"
+readonly LOCK_FILE="/var/lock/battery-deploy.lock"
+
+log() {
+  printf '[deploy] %s\n' "$*"
+}
+
+die() {
+  printf '[deploy] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  deploy-service.sh --check
+  deploy-service.sh <service> <image-tag>
+
+Services:
+  frontend | backend | backend-ai | ai-infer | vlm
+
+Environment:
+  DEPLOY_DIR  Compose directory (default: /opt/battery/infra)
+  AWS_REGION  ECR region (default: ap-northeast-2)
+EOF
+}
+
+env_value() {
+  local key="$1"
+  local env_file="$2"
+
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; found=1; exit } END { if (!found) exit 1 }' "$env_file"
+}
+
+replace_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_file="$3"
+  local temp_file
+
+  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")"
+  if ! awk -F= -v key="$key" -v value="$value" '
+    $1 == key { print key "=" value; found=1; next }
+    { print }
+    END { if (!found) exit 42 }
+  ' "$env_file" > "$temp_file"; then
+    rm -f -- "$temp_file"
+    die "${key} is missing from ${env_file}"
+  fi
+
+  chmod --reference="$env_file" "$temp_file"
+  chown --reference="$env_file" "$temp_file"
+  mv -f -- "$temp_file" "$env_file"
+}
+
+service_config() {
+  local service="$1"
+
+  case "$service" in
+    frontend)
+      TAG_KEY="FRONTEND_TAG"
+      CONTAINER_NAME="battery-frontend"
+      WAIT_TIMEOUT=180
+      ;;
+    backend)
+      TAG_KEY="BACKEND_TAG"
+      CONTAINER_NAME="battery-backend"
+      WAIT_TIMEOUT=240
+      ;;
+    backend-ai)
+      TAG_KEY="BACKEND_AI_TAG"
+      CONTAINER_NAME="battery-backend-ai"
+      WAIT_TIMEOUT=240
+      ;;
+    ai-infer)
+      TAG_KEY="AI_INFER_TAG"
+      CONTAINER_NAME="battery-ai-infer"
+      WAIT_TIMEOUT=600
+      ;;
+    vlm)
+      TAG_KEY="VLM_TAG"
+      CONTAINER_NAME="battery-vlm"
+      WAIT_TIMEOUT=900
+      ;;
+    *)
+      die "unsupported service: ${service}"
+      ;;
+  esac
+}
+
+build_compose_command() {
+  local deploy_dir="$1"
+  local env_file="$2"
+
+  COMPOSE=(docker compose --env-file "$env_file" -f "$deploy_dir/compose.yaml")
+
+  if [[ -f "$deploy_dir/compose.gpu.yaml" ]] \
+    && command -v nvidia-smi >/dev/null 2>&1 \
+    && nvidia-smi -L >/dev/null 2>&1; then
+    COMPOSE+=(-f "$deploy_dir/compose.gpu.yaml")
+  elif [[ -f "$deploy_dir/compose.cpu.yaml" ]]; then
+    COMPOSE+=(-f "$deploy_dir/compose.cpu.yaml")
+  fi
+}
+
+check_prerequisites() {
+  local deploy_dir="$1"
+  local env_file="$2"
+
+  command -v aws >/dev/null 2>&1 || die "aws CLI is not installed"
+  command -v docker >/dev/null 2>&1 || die "docker is not installed"
+  command -v flock >/dev/null 2>&1 || die "flock is not installed"
+  [[ -f "$deploy_dir/compose.yaml" ]] || die "missing ${deploy_dir}/compose.yaml"
+  [[ -f "$env_file" ]] || die "missing ${env_file}"
+
+  local required_key
+  for required_key in ECR_REGISTRY FRONTEND_TAG BACKEND_TAG BACKEND_AI_TAG AI_INFER_TAG VLM_TAG; do
+    env_value "$required_key" "$env_file" >/dev/null || die "${required_key} is missing from ${env_file}"
+  done
+
+  "${COMPOSE[@]}" config --quiet
+}
+
+verify_container() {
+  local container_name="$1"
+  local state
+  local health
+
+  state="$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null)" || return 1
+  [[ "$state" == "running" ]] || return 1
+
+  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name")" || return 1
+  [[ "$health" == "none" || "$health" == "healthy" ]] || return 1
+
+  sleep 5
+  [[ "$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null)" == "running" ]]
+}
+
+deploy_once() {
+  local service="$1"
+  local registry="$2"
+  local region="$3"
+
+  log "authenticating Docker to ${registry}"
+  aws ecr get-login-password --region "$region" \
+    | docker login --username AWS --password-stdin "$registry" >/dev/null || return 1
+
+  log "pulling ${service}"
+  "${COMPOSE[@]}" config --quiet || return 1
+  "${COMPOSE[@]}" pull "$service" || return 1
+
+  log "starting ${service}"
+  "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$service" || return 1
+  verify_container "$CONTAINER_NAME" || return 1
+}
+
+main() {
+  local deploy_dir="${DEPLOY_DIR:-$DEFAULT_DEPLOY_DIR}"
+  local region="${AWS_REGION:-$DEFAULT_AWS_REGION}"
+  local env_file="${deploy_dir}/.env"
+
+  build_compose_command "$deploy_dir" "$env_file"
+
+  if [[ "${1:-}" == "--check" ]]; then
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    check_prerequisites "$deploy_dir" "$env_file"
+    log "deployment prerequisites are valid"
+    exit 0
+  fi
+
+  [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+
+  local service="$1"
+  local new_tag="$2"
+  [[ "$new_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid OCI image tag: ${new_tag}"
+
+  service_config "$service"
+  check_prerequisites "$deploy_dir" "$env_file"
+
+  exec 9>"$LOCK_FILE"
+  flock -w 900 9 || die "another deployment still holds ${LOCK_FILE}"
+
+  local registry
+  local old_tag
+  local backup_file
+  registry="$(env_value ECR_REGISTRY "$env_file")"
+  old_tag="$(env_value "$TAG_KEY" "$env_file")"
+
+  if [[ "$old_tag" == "$new_tag" ]]; then
+    log "${service} already uses ${new_tag}; nothing to do"
+    exit 0
+  fi
+
+  backup_file="${env_file}.before-${service}-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp --preserve=mode,ownership,timestamps -- "$env_file" "$backup_file"
+
+  log "updating ${service}: ${old_tag} -> ${new_tag}"
+  replace_env_value "$TAG_KEY" "$new_tag" "$env_file"
+
+  if deploy_once "$service" "$registry" "$region"; then
+    log "deployment succeeded: ${service}@${new_tag}"
+    exit 0
+  fi
+
+  log "deployment failed; restoring ${service}@${old_tag}"
+  cp --preserve=mode,ownership,timestamps -- "$backup_file" "$env_file"
+
+  if deploy_once "$service" "$registry" "$region"; then
+    die "deployment failed and rollback succeeded: ${service}@${old_tag}"
+  fi
+
+  die "deployment and rollback both failed; inspect ${CONTAINER_NAME} immediately"
+}
+
+main "$@"

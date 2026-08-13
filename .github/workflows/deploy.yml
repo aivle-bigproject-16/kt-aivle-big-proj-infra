@@ -1,0 +1,108 @@
+name: Deploy Compose configuration
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  DEPLOY_BUCKET: kt-aivle-big-proj-kks
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Validate deployment files
+        env:
+          ECR_REGISTRY: 825555019742.dkr.ecr.ap-northeast-2.amazonaws.com
+          FRONTEND_TAG: ci
+          BACKEND_TAG: ci
+          BACKEND_AI_TAG: ci
+          AI_INFER_TAG: ci
+          VLM_TAG: ci
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy-service.sh
+          bash -n scripts/deploy-infra.sh
+          docker compose -f compose.yaml -f compose.gpu.yaml config --quiet
+
+      - name: Build immutable infra bundle
+        run: |
+          set -euo pipefail
+          tar -czf infra.tar.gz \
+            compose.yaml \
+            compose.gpu.yaml \
+            scripts/deploy-service.sh \
+            scripts/deploy-infra.sh \
+            stub
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "825555019742"
+
+      - name: Upload infra bundle
+        env:
+          BUNDLE_KEY: deploy/infra/${{ github.sha }}.tar.gz
+        run: |
+          aws s3 cp --only-show-errors \
+            infra.tar.gz \
+            "s3://${DEPLOY_BUCKET}/${BUNDLE_KEY}"
+
+      - name: Deploy through Systems Manager
+        env:
+          INSTANCE_ID: ${{ vars.AWS_DEPLOY_INSTANCE_ID }}
+          BUNDLE_KEY: deploy/infra/${{ github.sha }}.tar.gz
+        run: |
+          set -euo pipefail
+
+          parameters=$(jq -cn \
+            --arg bundle_key "$BUNDLE_KEY" \
+            '{BundleKey: [$bundle_key]}')
+
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AivleBigProjectDeployInfra \
+            --comment "Deploy $GITHUB_REPOSITORY@$GITHUB_SHA" \
+            --parameters "$parameters" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          status=Pending
+          for _ in $(seq 1 180); do
+            status=$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || printf 'Pending')
+
+            case "$status" in
+              Success|Cancelled|TimedOut|Failed|Cancelling) break ;;
+            esac
+            sleep 10
+          done
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
+
+          test "$status" = Success

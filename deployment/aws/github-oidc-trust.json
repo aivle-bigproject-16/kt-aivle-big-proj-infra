@@ -1,0 +1,24 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::825555019742:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": [
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-infra:ref:refs/heads/main",
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-frontend:ref:refs/heads/develop",
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-backend:ref:refs/heads/main",
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-ai-infer:ref:refs/heads/main",
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-vlm:ref:refs/heads/develop"
+          ]
+        }
+      }
+    }
+  ]
+}
