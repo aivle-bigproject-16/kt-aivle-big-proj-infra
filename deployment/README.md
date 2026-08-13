@@ -29,7 +29,7 @@ No long-lived AWS access key or SSH private key is stored in GitHub.
 
 - IAM role: `AivleBigProjectGitHubDeployRole`
 - SSM documents: `AivleBigProjectDeployService`, `AivleBigProjectDeployInfra`
-- EC2 instance: `i-0b802c4b90563424f`
+- EC2 instance: `i-0562ca896665be441` (`g4dn.xlarge`, Tesla T4)
 - Region: `ap-northeast-2`
 - Infra bundles: `s3://kt-aivle-big-proj-kks/deploy/infra/<git-sha>.tar.gz`
 

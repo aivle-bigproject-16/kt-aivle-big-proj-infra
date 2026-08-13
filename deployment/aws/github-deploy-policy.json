@@ -34,7 +34,7 @@
       "Resource": [
         "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployService",
         "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployInfra",
-        "arn:aws:ec2:ap-northeast-2:825555019742:instance/i-0b802c4b90563424f"
+        "arn:aws:ec2:ap-northeast-2:825555019742:instance/i-0562ca896665be441"
       ]
     },
     {
