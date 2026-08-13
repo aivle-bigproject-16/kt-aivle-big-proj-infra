@@ -26,6 +26,7 @@ volumes/
 *.sql.bak
 
 # ── 모델 가중치 (S3 models/ 에 보관) ──
+models/
 *.pt
 *.onnx
 *.engine

@@ -36,13 +36,11 @@
 #   - ai-infer 이미지는 ECR 에 이미 있다 (태그 backend-contract-7b7980e)
 #   - frontend · backend · backend-ai · vlm 4종은 아직 굽지 않았다
 #
-# --- 미해결 (이 파일로는 고칠 수 없다. BE 수정이 필요하다) --------------------
-#   module-ai 는 프로퍼티 ai-server.base-url 하나를 두 클라이언트가 나눠 쓴다.
-#     AiServerForwardService  -> POST {base-url}/ai/cells/analyze          = ai-infer(8000)
-#     LlmWebClient            -> POST {base-url}/vlm/reports/individual    = vlm(8001)
-#   서로 다른 두 서버를 값 하나가 가리켜야 하므로 어느 쪽으로 주든 한쪽이 404 가 된다.
-#   BE 가 ai-server.base-url 과 vlm.base-url 로 분리해야 해소된다.
-#   그 전까지 아래 AI_SERVER_URL 은 셀 분석과 리포트 중 하나만 살린다.
+# --- AI 서비스 URL ------------------------------------------------------------
+#   module-ai 는 서로 독립된 두 프로퍼티로 모델 서버를 호출한다.
+#     ai-server.base-url  <- AI_SERVER_URL  -> ai-infer(8000), 셀 분석
+#     llm-server.base-url <- LLM_SERVER_URL -> vlm(8001), 리포트 생성
+#   compose 는 두 값을 각각 내부 서비스 주소로 주입한다.
 #
 # --- 기동 예시 ---------------------------------------------------------------
 #   docker compose up -d                                  # redis 만
@@ -60,7 +58,7 @@ services:
   # =====================================================================
   frontend:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-frontend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-frontend:${FRONTEND_TAG:?FRONTEND_TAG is required}
     container_name: battery-frontend
     restart: unless-stopped
     ports:
@@ -85,7 +83,7 @@ services:
   # =====================================================================
   backend:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend:${BACKEND_TAG:?BACKEND_TAG is required}
     container_name: battery-backend
     restart: unless-stopped
     # module-api. FE 대상 REST + WebSocket + 인증 + 시뮬레이션 오케스트레이션.
@@ -143,23 +141,19 @@ services:
 
   backend-ai:
     profiles: [app]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend-ai:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-backend-ai:${BACKEND_AI_TAG:?BACKEND_AI_TAG is required}
     container_name: battery-backend-ai
     restart: unless-stopped
     # module-ai. 모델 서버 연동 전담. vlm(8001) 과 ai-infer(8000) 를 둘 다 붙인다.
     # 두 경로 모두 코드가 있다.
     #   셀 분석  AiServerForwardService -> POST {ai-server.base-url}/ai/cells/analyze
-    #   리포트    LlmWebClient           -> POST {ai-server.base-url}/vlm/reports/individual · /daily
+    #   리포트    LlmWebClient           -> POST {llm-server.base-url}/vlm/reports/individual · /daily
     environment:
       DB_PASSWORD: ${DB_PASSWORD}
 
-      # 주의: 이 값 하나가 위 두 클라이언트에 동시에 쓰인다.
-      # ai-infer 로 주면 리포트가 404, vlm 으로 주면 셀 분석이 404 다.
-      # BE 가 프로퍼티를 둘로 분리하기 전까지는 살릴 쪽을 골라야 한다.
-      #   http://ai-infer:8000  = 셀 분석을 살린다 (판정 파이프라인 우선)
-      #   http://vlm:8001       = 리포트를 살린다
-      # 기본값은 셀 분석이다. 판정이 되어야 replay 폴백용 원본이 DB 에 쌓인다.
+      # 셀 분석과 리포트 생성은 각각 독립된 백엔드 프로퍼티를 사용한다.
       AI_SERVER_URL: ${AI_SERVER_URL:-http://ai-infer:8000}
+      LLM_SERVER_URL: ${LLM_SERVER_URL:-http://vlm:8001}
 
       # 내부 호출 인증 키. module-api · ai-infer 와 같은 값이어야 한다.
       AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
@@ -178,7 +172,7 @@ services:
 
   ai-infer:
     profiles: [ai]
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-ai-infer:${AI_INFER_TAG:-backend-contract-7b7980e}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-ai-infer:${AI_INFER_TAG:?AI_INFER_TAG is required}
     container_name: battery-ai-infer
     restart: unless-stopped
     # 변수 이름은 ai-infer 의 app/core/settings.py 가 정본이다.
@@ -265,7 +259,7 @@ services:
 
   vlm:
     profiles: [ai, llm]              # ai 와 함께, 또는 --profile llm 으로 단독 기동
-    image: ${ECR_REGISTRY}/kt-aivle-big-proj-vlm:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY}/kt-aivle-big-proj-vlm:${VLM_TAG:?VLM_TAG is required}
     container_name: battery-vlm
     restart: unless-stopped
     environment:
