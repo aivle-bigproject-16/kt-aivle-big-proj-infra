@@ -55,7 +55,7 @@ unset VERIFY_PRESIGNED_URL
 
 7번은 backend `cf0dbbc`까지 XFAIL이었으나 `0824846`(BE PR #15)에서 해소되어 이제 PASS를 기대합니다. `ReportService`가 하드코딩된 `http://localhost:8081` 대신 `aiGatewayRestClient`를 주입받고, 그 빈이 `ai-gateway.base-url`을 통해 `AI_GATEWAY_URL`을 읽습니다. Compose가 `http://backend-ai:8081`을 주입하므로 호출이 성립합니다. 따라서 `Failed to trigger LLM generation` 로그가 보이면 그것은 알려진 결함이 아니라 실제 배선 또는 인증 문제이며, 검증은 이를 FAIL로 판정합니다. `cf0dbbc` 이전 이미지를 일부러 검증할 때만 `BACKEND_PRE_0824846=1`을 주어 XFAIL로 되돌릴 수 있습니다.
 
-10번도 현재 알려진 XFAIL입니다. `SimulationSnapshotStore.find()`가 Redis 예외를 처리하지 않아 `RedisConnectionFailureException`이 전파되고 데이터베이스 대체 경로가 없습니다. 이 검증은 `--allow-mutate`가 없으면 `requires --allow-mutate` 사유로 SKIP합니다.
+10번은 Option B 결정에 따라 실제 PASS/FAIL 검증입니다. BE `origin/main`의 `26c801f`(변경 커밋 `ccd9ae3`)에서 `SimulationSnapshotStore.find()`는 `RedisConnectionFailureException`을 캐시 미스로 처리하거나 데이터베이스 또는 빈 스냅샷으로 대체하지 않고 HTTP 503 응답으로 변환합니다. 따라서 Redis 중단 상태에서 `/api/sim`이 1초 이내에 HTTP 5xx 실패 응답을 끝까지 반환하면 PASS하고, 요청이 멈추거나 시간 초과되거나 연결이 끊기거나 5xx가 아닌 응답을 반환하면 FAIL합니다. 이 검증은 `--allow-mutate`가 없으면 `requires --allow-mutate` 사유로 SKIP합니다.
 
 ## 8번이 필요로 하는 서명 URL
 

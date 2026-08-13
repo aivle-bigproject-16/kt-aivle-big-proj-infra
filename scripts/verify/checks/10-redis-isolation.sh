@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Redis 장애 정책은 Option B(1초 이내 실패 응답)로 결정되었다.
+# 근거는 BE origin/main의 26c801f(PR #16, 변경 커밋 ccd9ae3)에서 확인한 실제 코드다.
+# SimulationSnapshotStore.find()는 RedisConnectionFailureException을 캐시 미스로 처리하지 않고
+# HTTP 503 ResponseStatusException으로 변환하며, DB 또는 빈 스냅샷 대체 경로는 추가하지 않았다.
+# gh 인증 토큰이 유효하지 않아 PR 본문과 댓글은 확인하지 못했으므로 이 판정은 BE main diff에만 근거한다.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 
@@ -38,21 +43,31 @@ if ! wait_for 30 '[ "$(svc_state redis)" = exited ]'; then
     result FAIL "redis did not stop within 30 seconds"
 fi
 
-code=$(http_code "$BASE_URL/api/sim" --max-time 1 2>/dev/null || true)
-wait_for 5 "logs_since backend '$started' | grep -Eq 'RedisConnectionFailureException|RedisConnectionException|Unable to connect to Redis'" || true
-recent_logs=$(logs_since backend "$started")
+probe=$(curl -sS -o /dev/null \
+    --connect-timeout 1 \
+    --max-time 1 \
+    -w '%{http_code}|%{time_total}' \
+    "$BASE_URL/api/sim")
+curl_status=$?
+
+code=${probe%%|*}
+elapsed=${probe#*|}
 
 if ! cleanup; then
     result FAIL "redis fault probe completed but redis could not be restarted"
 fi
 
-if [ "$code" = 200 ]; then
-    result PASS "/api/sim remained available within 1 second while redis was stopped"
+if [ "$curl_status" -ne 0 ]; then
+    result FAIL "/api/sim hung, timed out, or dropped the connection while redis was stopped (curl exit $curl_status, ${elapsed:-unknown}s)"
 fi
 
-if printf '%s\n' "$recent_logs" | grep -Eq 'RedisConnectionFailureException|RedisConnectionException|Unable to connect to Redis'; then
-    printf '%s\n' "$recent_logs" | grep -E 'RedisConnectionFailureException|RedisConnectionException|Unable to connect to Redis' | tail -n 10 >&2
-    result XFAIL "known SimulationSnapshotStore Redis exception prevented the 1-second UI response"
+case "$code" in
+    5??) ;;
+    *) result FAIL "/api/sim returned HTTP $code instead of a failure response (HTTP 5xx) while redis was stopped (${elapsed}s)" ;;
+esac
+
+if ! awk -v elapsed="$elapsed" 'BEGIN { exit !(elapsed + 0 <= 1.0) }'; then
+    result FAIL "/api/sim returned HTTP $code after ${elapsed}s, exceeding the 1-second cap"
 fi
 
-result FAIL "/api/sim failed during the redis outage without the expected Redis exception evidence"
+result PASS "/api/sim returned HTTP $code in ${elapsed}s while redis was stopped; the response completed without a hang or connection drop"
