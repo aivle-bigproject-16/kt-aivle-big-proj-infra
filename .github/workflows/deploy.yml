@@ -39,6 +39,8 @@ jobs:
           bash -n scripts/deploy-service.sh
           bash -n scripts/deploy-infra.sh
           bash -n scripts/post-deploy-benchmark.sh
+          bash -n scripts/prepare-fast-test-host.sh
+          bash -n scripts/start-fast-test-host.sh
           docker compose -f compose.yaml -f compose.gpu.yaml config --quiet
 
       - name: Build immutable infra bundle
@@ -50,6 +52,8 @@ jobs:
             scripts/deploy-service.sh \
             scripts/deploy-infra.sh \
             scripts/post-deploy-benchmark.sh \
+            scripts/prepare-fast-test-host.sh \
+            scripts/start-fast-test-host.sh \
             stub
 
       - name: Configure AWS credentials
@@ -108,3 +112,12 @@ jobs:
             --instance-id "$INSTANCE_ID"
 
           test "$status" = Success
+
+      - name: Publish latest successful infra release
+        env:
+          BUNDLE_KEY: deploy/infra/${{ github.sha }}.tar.gz
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$BUNDLE_KEY" \
+            | aws s3 cp --only-show-errors - \
+                "s3://${DEPLOY_BUCKET}/deploy/infra/latest"

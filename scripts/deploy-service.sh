@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 readonly DEFAULT_DEPLOY_DIR="/opt/battery/infra"
 readonly DEFAULT_AWS_REGION="ap-northeast-2"
+readonly DEFAULT_RUNTIME_PARAMETER="/kt-aivle-big-proj/prod/runtime-env"
+readonly PRODUCTION_INSTANCE_ID="i-0562ca896665be441"
 readonly LOCK_FILE="/var/lock/battery-deploy.lock"
 
 log() {
@@ -27,7 +29,42 @@ Services:
 Environment:
   DEPLOY_DIR  Compose directory (default: /opt/battery/infra)
   AWS_REGION  ECR region (default: ap-northeast-2)
+  RUNTIME_ENV_PARAMETER  SecureString published after a successful production deploy
 EOF
+}
+
+instance_id() {
+  local token
+  token="$(curl -fsS -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+    http://169.254.169.254/latest/api/token)" || return 1
+  curl -fsS \
+    -H "X-aws-ec2-metadata-token: ${token}" \
+    http://169.254.169.254/latest/meta-data/instance-id
+}
+
+publish_runtime_env() {
+  local env_file="$1"
+  local region="$2"
+  local parameter="${RUNTIME_ENV_PARAMETER:-$DEFAULT_RUNTIME_PARAMETER}"
+  local current_instance_id
+
+  current_instance_id="$(instance_id)" || {
+    log "unable to determine instance ID; runtime release was not published"
+    return 1
+  }
+  if [[ "$current_instance_id" != "$PRODUCTION_INSTANCE_ID" ]]; then
+    log "refusing to publish runtime release from ${current_instance_id}"
+    return 1
+  fi
+
+  log "publishing deployed tag set to ${parameter}"
+  aws ssm put-parameter \
+    --region "$region" \
+    --name "$parameter" \
+    --type SecureString \
+    --value "file://${env_file}" \
+    --overwrite >/dev/null
 }
 
 run_post_deploy_benchmark() {
@@ -140,6 +177,7 @@ check_prerequisites() {
   local env_file="$2"
 
   command -v aws >/dev/null 2>&1 || die "aws CLI is not installed"
+  command -v curl >/dev/null 2>&1 || die "curl is not installed"
   command -v docker >/dev/null 2>&1 || die "docker is not installed"
   command -v flock >/dev/null 2>&1 || die "flock is not installed"
   [[ -f "$deploy_dir/compose.yaml" ]] || die "missing ${deploy_dir}/compose.yaml"
@@ -220,6 +258,8 @@ main() {
 
   if [[ "$old_tag" == "$new_tag" ]]; then
     log "${service} already uses ${new_tag}"
+    publish_runtime_env "$env_file" "$region" \
+      || die "service is deployed but the test release state was not published"
     run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
     exit 0
   fi
@@ -232,6 +272,8 @@ main() {
 
   if deploy_once "$service" "$registry" "$region"; then
     log "deployment succeeded: ${service}@${new_tag}"
+    publish_runtime_env "$env_file" "$region" \
+      || die "service is deployed but the test release state was not published"
     run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
     exit 0
   fi

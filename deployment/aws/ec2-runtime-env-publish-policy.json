@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublishSuccessfulProductionRuntimeRelease",
+      "Effect": "Allow",
+      "Action": "ssm:PutParameter",
+      "Resource": "arn:aws:ssm:ap-northeast-2:825555019742:parameter/kt-aivle-big-proj/prod/runtime-env"
+    }
+  ]
+}
