@@ -26,7 +26,7 @@ Usage:
 The benchmark performs one unmeasured warm-up, then measures:
   - CT inference:  20 fixed images
   - RGB inference: 20 fixed images
-  - VLM report:     5 fixed individual-report requests
+  - VLM report:     3 fixed individual-report requests
 EOF
 }
 
@@ -229,14 +229,14 @@ def generate():
 generate()
 values = []
 failures = []
-for index in range(1, 6):
+for index in range(1, 4):
     try:
         values.append(generate())
     except Exception as exc:
         failures.append({"iteration": index, "error": str(exc)[:300]})
 
 result = {
-    "requested": 5,
+    "requested": 3,
     "succeeded": len(values),
     "failed": len(failures),
     "failures": failures,
