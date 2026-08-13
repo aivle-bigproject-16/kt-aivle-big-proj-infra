@@ -218,7 +218,7 @@ def generate():
         method="POST",
     )
     started = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=240) as response:
+    with urllib.request.urlopen(req, timeout=180) as response:
         body = json.load(response)
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     if body.get("status") != "COMPLETED":
