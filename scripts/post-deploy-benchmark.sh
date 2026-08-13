@@ -373,7 +373,12 @@ main() {
 
   log "result: s3://${bucket}/${result_key}"
   jq -c . "$result_file"
-  [[ "$infer_status" -eq 0 && "$vlm_status" -eq 0 ]]
+
+  local final_status=0
+  [[ "$infer_status" -eq 0 && "$vlm_status" -eq 0 ]] || final_status=1
+  trap - EXIT
+  cleanup
+  return "$final_status"
 }
 
 main "$@"
