@@ -48,3 +48,6 @@ Thumbs.db
 
 # 검증 하네스 실행 산출물 (실행할 때마다 생김)
 scripts/verify/reports/
+
+# 매니페스트 생성기가 S3에서 받아오는 라벨 아카이브 (약 29MB, 원본은 S3에 있음)
+.cache/

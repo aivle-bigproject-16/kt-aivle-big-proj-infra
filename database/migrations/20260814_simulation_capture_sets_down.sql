@@ -40,7 +40,10 @@ SET capture_set = backup.capture_set
 FROM public.ops_backup_sim_image_20260814_v2 AS backup
 WHERE image.id = backup.id;
 
+-- Match every seed version, not just the one that existed when this migration
+-- was written. A pinned version leaves a newer ledger row behind after a
+-- rollback, which then claims a seed is applied that is no longer in the table.
 DELETE FROM public.ops_simulation_seed_migration
-WHERE version = 'simulation-runtime-v2';
+WHERE version LIKE 'simulation-runtime-%';
 
 COMMIT;
