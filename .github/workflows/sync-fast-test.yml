@@ -57,11 +57,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          # SendCommand caps the comment at 100 characters, and the repository
+          # name plus a full SHA already exceeds that.
           command_id=$(aws ssm send-command \
             --region "$AWS_REGION" \
             --instance-ids "$INSTANCE_ID" \
             --document-name AivleBigProjectSyncFastTest \
-            --comment "Sync test host with $GITHUB_REPOSITORY@$GITHUB_SHA" \
+            --comment "Sync test host with $GITHUB_REPOSITORY@${GITHUB_SHA:0:7}" \
             --query 'Command.CommandId' \
             --output text)
 
