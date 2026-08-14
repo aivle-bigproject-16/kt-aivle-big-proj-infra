@@ -15,7 +15,7 @@
             "repo:aivle-bigproject-16/kt-aivle-big-proj-frontend:ref:refs/heads/develop",
             "repo:aivle-bigproject-16/kt-aivle-big-proj-backend:ref:refs/heads/main",
             "repo:aivle-bigproject-16/kt-aivle-big-proj-ai-infer:ref:refs/heads/main",
-            "repo:aivle-bigproject-16@296020385/kt-aivle-big-proj-vlm@1293174370:ref:refs/heads/develop"
+            "repo:aivle-bigproject-16/kt-aivle-big-proj-vlm:ref:refs/heads/develop"
           ]
         }
       }
