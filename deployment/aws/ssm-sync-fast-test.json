@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Resynchronise the GPU test host with the latest successful production release",
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "syncFastTestHost",
+      "inputs": {
+        "timeoutSeconds": "1800",
+        "runCommand": [
+          "exec systemctl restart battery-fast-test.service"
+        ]
+      }
+    }
+  ]
+}

@@ -2,8 +2,9 @@
 
 set -Eeuo pipefail
 
-readonly EXPECTED_INSTANCE_ID="i-0f243b999a4840674"
-readonly EXPECTED_INSTANCE_TYPE="g6e.xlarge"
+readonly DEFAULT_EXPECTED_INSTANCE_ID="i-0f243b999a4840674"
+readonly DEFAULT_EXPECTED_INSTANCE_TYPE="g6e.xlarge"
+readonly DEFAULT_EXPECTED_GPU="NVIDIA L40S"
 readonly DEFAULT_REGION="ap-northeast-2"
 readonly DEFAULT_BUCKET="kt-aivle-big-proj-kks"
 readonly DEFAULT_LATEST_KEY="deploy/infra/latest"
@@ -130,6 +131,9 @@ main() {
   local runtime_parameter="${RUNTIME_ENV_PARAMETER:-$DEFAULT_RUNTIME_PARAMETER}"
   local deploy_dir="${DEPLOY_DIR:-$DEFAULT_DEPLOY_DIR}"
   local model_dir="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
+  local expected_instance="${EXPECTED_INSTANCE_ID:-$DEFAULT_EXPECTED_INSTANCE_ID}"
+  local expected_type="${EXPECTED_INSTANCE_TYPE:-$DEFAULT_EXPECTED_INSTANCE_TYPE}"
+  local expected_gpu="${EXPECTED_GPU:-$DEFAULT_EXPECTED_GPU}"
 
   for tool in aws curl docker flock python3 tar; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: ${tool}"
@@ -148,11 +152,12 @@ main() {
   local instance_type
   instance_id="$(metadata instance-id)"
   instance_type="$(metadata instance-type)"
-  [[ "$instance_id" == "$EXPECTED_INSTANCE_ID" ]] \
+  [[ "$instance_id" == "$expected_instance" ]] \
     || die "refusing to run on unexpected instance ${instance_id}"
-  [[ "$instance_type" == "$EXPECTED_INSTANCE_TYPE" ]] \
-    || die "expected ${EXPECTED_INSTANCE_TYPE}, got ${instance_type}"
-  nvidia-smi -L | grep -q 'NVIDIA L40S' || die "NVIDIA L40S was not detected"
+  [[ "$instance_type" == "$expected_type" ]] \
+    || die "expected ${expected_type}, got ${instance_type}"
+  nvidia-smi -L | grep -qF "$expected_gpu" \
+    || die "${expected_gpu} was not detected: $(nvidia-smi -L | tr '\n' ' ')"
 
   local work_dir
   local pointer_file
