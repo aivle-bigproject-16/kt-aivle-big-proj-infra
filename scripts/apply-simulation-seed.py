@@ -10,7 +10,7 @@ from pathlib import Path
 import psycopg
 
 
-VERSION = "simulation-runtime-v2"
+VERSION = "simulation-runtime-v3"
 BUCKET = "kt-aivle-big-proj-kks"
 DEFAULT_DB_URL = (
     "postgresql://aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres"

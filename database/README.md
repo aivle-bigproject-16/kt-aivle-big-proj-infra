@@ -1,4 +1,4 @@
-# Simulation seed v2
+# Simulation seed v3
 
 ## The manifest
 
@@ -6,8 +6,8 @@ The loader takes a CSV that maps S3 objects onto cells and capture sets. It is
 versioned next to the images it references:
 
 ```
-s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-representative-images-v2.csv
-s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-representative-images-v2.csv.sha256
+s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-case-balanced-images-v3.csv
+s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-case-balanced-images-v3.csv.sha256
 ```
 
 Download both and confirm the digest before running anything against the
@@ -15,9 +15,10 @@ database. The `.sha256` sidecar is in `sha256sum` format, so it verifies in
 place:
 
 ```bash
-aws s3 cp s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-representative-images-v2.csv .
-aws s3 cp s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests/runtime-representative-images-v2.csv.sha256 .
-sha256sum --check runtime-representative-images-v2.csv.sha256
+BASE=s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/manifests
+aws s3 cp $BASE/runtime-case-balanced-images-v3.csv .
+aws s3 cp $BASE/runtime-case-balanced-images-v3.csv.sha256 .
+sha256sum --check runtime-case-balanced-images-v3.csv.sha256
 ```
 
 The same digest is recorded in `ops_simulation_seed_migration.manifest_sha256`
@@ -25,13 +26,57 @@ after a successful load, so the applied manifest can always be identified later.
 The digest of the manifest currently in S3 is:
 
 ```
-a7011a855690643cfbbe20c06fb62de28d71e1116f298b3e0e765440a2d7d1b5
+455182a445cf2a8b8821c4164e174093435c383ca79819a9374a1e2add211374
 ```
 
-The manifest holds 880 rows built from only 82 distinct objects, because all
-twenty cells share one representative image set. The unique constraint is
-`(battery_cell_id, bucket_name, object_key)`, so reuse across cells does not
-collide.
+The superseded `runtime-representative-images-v2.csv` is still in the same
+prefix. Do not load it: it gives every cell the same defective RGB set, so all
+twenty cells reject identically and the run tells you nothing.
+
+## Rebuilding the manifest
+
+`scripts/build-simulation-manifest.py` regenerates it from the defect labels
+published alongside the images, and is deterministic — the same labels produce
+a byte-identical CSV:
+
+```bash
+python scripts/build-simulation-manifest.py --download -o runtime-case-balanced-images-v3.csv
+```
+
+`--download` fetches the four label archives it needs from
+`s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.5/metadata-zips/`
+into `.cache/simulation-labels`. It prints the case distribution it produced,
+which is the part the loader cannot check for you.
+
+## What "case balanced" means
+
+The v1.5 source concentrates every defect in two cells. All 500 defective RGB
+frames belong to SIM-0001 and SIM-0002, and the only three defective CT frames
+belong to SIM-0001; the other 34,000 images are clean. Assigning each cell only
+its own images therefore caps a run at two rejecting cells, so the generator
+assigns images across cells deliberately. That is allowed because the unique
+constraint is `(battery_cell_id, bucket_name, object_key)`, which scopes an
+object to a cell rather than to the table.
+
+The resulting spread is five cells per quadrant, with the defect count stepped
+inside each group so a run crosses more than one decision point:
+
+|Cells|CT|RGB|Expected|
+|---|---|---|---|
+|SIM-0001 – SIM-0005|clean|clean|PASS / PASS|
+|SIM-0006 – SIM-0010|clean|1, 2, 3, 5, 10 defects|PASS / REJECT|
+|SIM-0011 – SIM-0015|1, 2, 3, 1, 2 defects|clean|REJECT / PASS|
+|SIM-0016 – SIM-0020|1, 2, 3, 1, 2 defects|1, 2, 3, 5, 10 defects|REJECT / REJECT|
+
+All three defect types the source contains are covered: `porosity` on CT,
+`Pollution` and `Damaged` on RGB. CT density stops at three because the source
+holds exactly three defective CT frames, and `Damaged` is placed on three named
+cells because only three such frames exist and filename ordering never reaches
+them.
+
+Note that `quality_label` is validated but never inserted — it is not one of the
+columns the loader writes. Whether a recapture actually triggers depends on the
+runtime quality model rejecting a frame, not on the label in this file.
 
 ## Apply in this order
 
@@ -55,13 +100,14 @@ The up migration snapshots all existing `SIM-%` image rows in
 `ops_backup_sim_image_20260814_v2`. The loader archives those rows instead of
 deleting them, so existing `inspection_image` foreign keys remain valid.
 
-The down migration refuses to delete v2 rows after an inspection references
+The down migration refuses to delete seeded rows after an inspection references
 them. In that case keep the capture-set-aware backend and restore through a new
 forward migration.
 
-Note that the down migration also deletes the `ops_simulation_seed_migration`
-row, and with it the `manifest_sha256` of the applied manifest. Record that
-digest before rolling back if it is the only copy you have.
+Note that the down migration also deletes every `ops_simulation_seed_migration`
+row, and with it the `manifest_sha256` of the applied manifest. The digest is
+also in the `.sha256` sidecar in S3, so this is recoverable, but record it
+first if the manifest you applied was never published there.
 
 ## Verifying a live database
 
