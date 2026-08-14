@@ -34,7 +34,8 @@ No long-lived AWS access key or SSH private key is stored in GitHub.
 ## AWS resources
 
 - IAM role: `AivleBigProjectGitHubDeployRole`
-- SSM documents: `AivleBigProjectDeployService`, `AivleBigProjectDeployInfra`
+- SSM documents: `AivleBigProjectDeployService`, `AivleBigProjectDeployInfra`,
+  `AivleBigProjectRunBenchmark`, `AivleBigProjectSyncFastTest`
 - Production EC2 instance: `i-0562ca896665be441` (`g4dn.xlarge`, Tesla T4, always running)
 - Fast-test EC2 instance: `i-0f243b999a4840674` (`g6e.xlarge`, NVIDIA L40S, start/stop on demand)
 - Region: `ap-northeast-2`
@@ -55,6 +56,11 @@ Application pushes never start the test instance. On its next manual start,
 `battery-fast-test.service` reads the latest successful production infra pointer and
 encrypted tag set, pulls all accumulated images once, and only then starts services.
 
+Deployments are one-way: the production deployment pipeline never writes to the test
+host, and the test host never publishes the runtime release pointer that production
+owns. A push that lands while the test host is already running therefore has no
+effect on it until the host is either restarted or explicitly resynchronised.
+
 ```powershell
 # State and the current URL. The public IP changes after a stop/start cycle.
 .\scripts\manage-fast-test-instance.ps1 -Action status
@@ -62,11 +68,39 @@ encrypted tag set, pulls all accumulated images once, and only then starts servi
 # Start, wait for EC2/SSM and HTTP readiness, then print the URL.
 .\scripts\manage-fast-test-instance.ps1 -Action start -Execute
 
+# Pull the latest successful production release into an already running test host.
+.\scripts\manage-fast-test-instance.ps1 -Action sync -Execute
+
 # Gracefully stop Compose, then stop only the g6e test instance.
 .\scripts\manage-fast-test-instance.ps1 -Action stop -Execute
 ```
+
+The `Sync GPU test host` workflow performs the same resynchronisation from GitHub
+Actions through the `AivleBigProjectSyncFastTest` document. It is `workflow_dispatch`
+only, because the test host is billed while it runs, and it requires the
+`AWS_FAST_TEST_INSTANCE_ID` repository variable.
 
 The management script refuses to act unless all test-instance identity tags match,
 and it separately verifies that the production `g4dn.xlarge` remains running.
 `scripts/prepare-fast-test-host.sh` performs the one-time disk preparation and
 installs `battery-fast-test.service`, which starts the cached Compose stack after boot.
+It installs whichever bundle `deploy/infra/latest` points at; set `DEPLOY_BUNDLE_KEY`
+only to pin an older release deliberately. Both host scripts accept
+`EXPECTED_INSTANCE_TYPE` and `EXPECTED_GPU` overrides so the same code can prepare a
+different GPU instance family without editing the guard.
+
+### Test-host instance role
+
+`battery-fast-test-start` needs more than the checked-in EC2 policies grant. The role
+attached to the test instance must additionally allow:
+
+|Action|Resource|Used by|
+|---|---|---|
+|`ssm:GetParameter`|`parameter/kt-aivle-big-proj/prod/runtime-env`|reading the deployed tag set|
+|`kms:Decrypt`|the key behind that SecureString|decrypting the tag set|
+|`ecr:GetAuthorizationToken`|`*`|Docker login|
+|`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:BatchCheckLayerAvailability`|the five service repositories|image pulls|
+|`s3:GetObject`|`kt-aivle-big-proj-kks/models/ai-infer/*`|one-time model bundle download|
+
+`ssm:PutParameter` on the runtime-env parameter must **not** be attached to the test
+instance. Publishing that pointer is a production-only responsibility.

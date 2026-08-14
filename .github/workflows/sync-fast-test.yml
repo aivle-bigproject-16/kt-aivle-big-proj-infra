@@ -1,0 +1,88 @@
+name: Sync GPU test host
+
+# The test host is billed while it runs, so this never fires on push. Run it by
+# hand after the production deployment you want the test host to mirror.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: fast-test-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "825555019742"
+
+      - name: Require a running test host
+        env:
+          INSTANCE_ID: ${{ vars.AWS_FAST_TEST_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+
+          test -n "$INSTANCE_ID" || {
+            echo "AWS_FAST_TEST_INSTANCE_ID is not configured" >&2
+            exit 1
+          }
+
+          ping_status=$(aws ssm describe-instance-information \
+            --region "$AWS_REGION" \
+            --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text)
+
+          test "$ping_status" = Online || {
+            echo "The test host is not online. Start it before syncing." >&2
+            exit 1
+          }
+
+      - name: Resynchronise through Systems Manager
+        env:
+          INSTANCE_ID: ${{ vars.AWS_FAST_TEST_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AivleBigProjectSyncFastTest \
+            --comment "Sync test host with $GITHUB_REPOSITORY@$GITHUB_SHA" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          status=Pending
+          for _ in $(seq 1 180); do
+            status=$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || printf 'Pending')
+
+            case "$status" in
+              Success|Cancelled|TimedOut|Failed|Cancelling) break ;;
+            esac
+            sleep 10
+          done
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
+
+          test "$status" = Success

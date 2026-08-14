@@ -2,10 +2,11 @@
 
 set -Eeuo pipefail
 
-readonly EXPECTED_INSTANCE_TYPE="g6e.xlarge"
+readonly DEFAULT_EXPECTED_INSTANCE_TYPE="g6e.xlarge"
+readonly DEFAULT_EXPECTED_GPU="NVIDIA L40S"
 readonly DEFAULT_REGION="ap-northeast-2"
 readonly DEFAULT_BUCKET="kt-aivle-big-proj-kks"
-readonly DEFAULT_BUNDLE_KEY="deploy/infra/f1c4c8c8e5e56bb3696f33c1af9d5f856e60c9ae.tar.gz"
+readonly DEFAULT_LATEST_KEY="deploy/infra/latest"
 readonly DEFAULT_RUNTIME_PARAMETER="/kt-aivle-big-proj/prod/runtime-env"
 readonly DEFAULT_DEPLOY_DIR="/opt/battery/infra"
 readonly DEFAULT_MODEL_DIR="/opt/ai-infer/models"
@@ -38,6 +39,26 @@ validate_archive_paths() {
     [[ "$entry" != /* ]] || die "archive contains absolute path: ${entry}"
     [[ ! "$entry" =~ (^|/)\.\.(/|$) ]] || die "archive contains parent path: ${entry}"
   done < <(tar -tzf "$archive")
+}
+
+# The bundle to install is whatever production last deployed successfully.
+# Pinning a commit here silently reintroduces an old Compose stack, so the SHA
+# is only ever read from the pointer object that the infra workflow publishes.
+resolve_bundle_key() {
+  local bucket="$1"
+  local region="$2"
+  local latest_key="$3"
+  local pointer_file="$4"
+  local key
+
+  aws s3 cp --only-show-errors --region "$region" \
+    "s3://${bucket}/${latest_key}" "$pointer_file" \
+    || die "no successful infra release is published at s3://${bucket}/${latest_key}"
+
+  key="$(tr -d '\r\n' < "$pointer_file")"
+  [[ "$key" =~ ^deploy/infra/[0-9a-f]{40}\.tar\.gz$ ]] \
+    || die "invalid latest bundle pointer: ${key}"
+  printf '%s' "$key"
 }
 
 replace_env_value() {
@@ -142,10 +163,13 @@ main() {
 
   local region="${AWS_REGION:-$DEFAULT_REGION}"
   local bucket="${DEPLOY_BUCKET:-$DEFAULT_BUCKET}"
-  local bundle_key="${DEPLOY_BUNDLE_KEY:-$DEFAULT_BUNDLE_KEY}"
+  local latest_key="${LATEST_BUNDLE_KEY:-$DEFAULT_LATEST_KEY}"
+  local bundle_key="${DEPLOY_BUNDLE_KEY:-}"
   local runtime_parameter="${RUNTIME_ENV_PARAMETER:-$DEFAULT_RUNTIME_PARAMETER}"
   local deploy_dir="${DEPLOY_DIR:-$DEFAULT_DEPLOY_DIR}"
   local model_dir="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
+  local expected_type="${EXPECTED_INSTANCE_TYPE:-$DEFAULT_EXPECTED_INSTANCE_TYPE}"
+  local expected_gpu="${EXPECTED_GPU:-$DEFAULT_EXPECTED_GPU}"
 
   for tool in aws curl docker flock python3 sha256sum tar; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: ${tool}"
@@ -164,11 +188,11 @@ main() {
   local instance_type
   instance_id="$(metadata instance-id)"
   instance_type="$(metadata instance-type)"
-  [[ "$instance_type" == "$EXPECTED_INSTANCE_TYPE" ]] \
-    || die "refusing to prepare ${instance_id}: expected ${EXPECTED_INSTANCE_TYPE}, got ${instance_type}"
+  [[ "$instance_type" == "$expected_type" ]] \
+    || die "refusing to prepare ${instance_id}: expected ${expected_type}, got ${instance_type}. Set EXPECTED_INSTANCE_TYPE and EXPECTED_GPU to prepare a different GPU test host."
 
-  nvidia-smi -L | grep -q 'NVIDIA L40S' \
-    || die "NVIDIA L40S was not detected"
+  nvidia-smi -L | grep -qF "$expected_gpu" \
+    || die "${expected_gpu} was not detected: $(nvidia-smi -L | tr '\n' ' ')"
 
   local work_dir
   local archive
@@ -178,6 +202,15 @@ main() {
   release_dir="${work_dir}/release"
   mkdir -p "$release_dir"
   trap "rm -rf -- '$work_dir'" EXIT
+
+  if [[ -z "$bundle_key" ]]; then
+    log "resolving the latest successful production infra release"
+    bundle_key="$(resolve_bundle_key \
+      "$bucket" "$region" "$latest_key" "${work_dir}/latest")"
+  else
+    [[ "$bundle_key" =~ ^deploy/infra/[0-9a-f]{40}\.tar\.gz$ ]] \
+      || die "invalid DEPLOY_BUNDLE_KEY: ${bundle_key}"
+  fi
 
   log "installing infra bundle s3://${bucket}/${bundle_key}"
   aws s3 cp --only-show-errors --region "$region" \

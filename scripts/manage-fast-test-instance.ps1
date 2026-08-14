@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("status", "start", "stop")]
+    [ValidateSet("status", "start", "stop", "sync")]
     [string]$Action,
 
     [switch]$Execute,
@@ -112,23 +112,45 @@ function Wait-HttpReady {
     throw "HTTP service did not become ready within $ReadyTimeoutSeconds seconds."
 }
 
-function Stop-ServicesGracefully {
-    param([string]$Id)
+function Invoke-SsmDocument {
+    param(
+        [string]$Id,
+        [string]$DocumentName,
+        [string]$Comment,
+        [string]$Parameters,
+        [string]$FailureMessage
+    )
 
     Wait-SsmOnline -Id $Id
-    $commandId = Invoke-Aws ssm send-command `
-        --region $Region `
-        --instance-ids $Id `
-        --document-name AWS-RunShellScript `
-        --comment "Gracefully stop separate g6e fast-test services" `
-        --parameters 'commands=["sudo systemctl stop battery-fast-test.service"]' `
-        --query "Command.CommandId" `
-        --output text
 
-    Invoke-Aws ssm wait command-executed `
-        --region $Region `
-        --command-id $commandId `
-        --instance-id $Id | Out-Null
+    $arguments = @(
+        "ssm", "send-command",
+        "--region", $Region,
+        "--instance-ids", $Id,
+        "--document-name", $DocumentName,
+        "--comment", $Comment
+    )
+    if ($Parameters) {
+        $arguments += @("--parameters", $Parameters)
+    }
+    $arguments += @("--query", "Command.CommandId", "--output", "text")
+
+    $commandId = Invoke-Aws @arguments
+
+    # The CLI waiter gives up after 20 checks, which is shorter than a full image
+    # pull, so a timed-out wait is retried rather than reported as a failure.
+    do {
+        $waited = $true
+        try {
+            Invoke-Aws ssm wait command-executed `
+                --region $Region `
+                --command-id $commandId `
+                --instance-id $Id | Out-Null
+        }
+        catch {
+            $waited = $false
+        }
+    } while (-not $waited)
 
     $status = Invoke-Aws ssm get-command-invocation `
         --region $Region `
@@ -137,8 +159,35 @@ function Stop-ServicesGracefully {
         --query "Status" `
         --output text
     if ($status -ne "Success") {
-        throw "Graceful service stop failed: $status"
+        $output = Invoke-Aws ssm get-command-invocation `
+            --region $Region `
+            --command-id $commandId `
+            --instance-id $Id `
+            --query "StandardErrorContent" `
+            --output text
+        throw "$FailureMessage`: $status`n$output"
     }
+}
+
+function Stop-ServicesGracefully {
+    param([string]$Id)
+
+    Invoke-SsmDocument `
+        -Id $Id `
+        -DocumentName "AWS-RunShellScript" `
+        -Comment "Gracefully stop separate GPU test services" `
+        -Parameters 'commands=["sudo systemctl stop battery-fast-test.service"]' `
+        -FailureMessage "Graceful service stop failed"
+}
+
+function Sync-LatestRelease {
+    param([string]$Id)
+
+    Invoke-SsmDocument `
+        -Id $Id `
+        -DocumentName "AivleBigProjectSyncFastTest" `
+        -Comment "Resynchronise the GPU test host with the latest production release" `
+        -FailureMessage "Test host synchronisation failed"
 }
 
 $target = Assert-SafeTargets
@@ -183,6 +232,24 @@ switch ($Action) {
         Wait-HttpReady -PublicIp $target.PublicIp
 
         Write-Host "Ready: http://$($target.PublicIp)" -ForegroundColor Green
+        exit 0
+    }
+
+    "sync" {
+        if (-not $Execute) {
+            Write-Host "DRY RUN: use -Execute to resynchronise the test instance." -ForegroundColor Yellow
+            exit 0
+        }
+
+        if ($target.State -ne "running") {
+            throw "Cannot synchronise from state $($target.State). Start the instance first."
+        }
+
+        Sync-LatestRelease -Id $InstanceId
+        $target = Assert-SafeTargets
+        Wait-HttpReady -PublicIp $target.PublicIp
+
+        Write-Host "Synchronised: http://$($target.PublicIp)" -ForegroundColor Green
         exit 0
     }
 
