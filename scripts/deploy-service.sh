@@ -8,6 +8,11 @@ readonly DEFAULT_RUNTIME_PARAMETER="/kt-aivle-big-proj/prod/runtime-env"
 readonly PRODUCTION_INSTANCE_ID="i-0562ca896665be441"
 readonly LOCK_FILE="/var/lock/battery-deploy.lock"
 
+# publish_runtime_env() returns this when the host is deliberately not allowed to
+# own the published runtime release. That is an expected outcome on the GPU test
+# host, so the caller must not treat it as a deployment failure.
+readonly RUNTIME_PUBLISH_SKIPPED=3
+
 log() {
   printf '[deploy] %s\n' "$*"
 }
@@ -35,10 +40,10 @@ EOF
 
 instance_id() {
   local token
-  token="$(curl -fsS -X PUT \
+  token="$(curl -fsS --connect-timeout 2 --max-time 5 -X PUT \
     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
     http://169.254.169.254/latest/api/token)" || return 1
-  curl -fsS \
+  curl -fsS --connect-timeout 2 --max-time 5 \
     -H "X-aws-ec2-metadata-token: ${token}" \
     http://169.254.169.254/latest/meta-data/instance-id
 }
@@ -55,7 +60,7 @@ publish_runtime_env() {
   }
   if [[ "$current_instance_id" != "$PRODUCTION_INSTANCE_ID" ]]; then
     log "refusing to publish runtime release from ${current_instance_id}"
-    return 1
+    return "$RUNTIME_PUBLISH_SKIPPED"
   fi
 
   log "publishing deployed tag set to ${parameter}"
@@ -65,6 +70,27 @@ publish_runtime_env() {
     --type SecureString \
     --value "file://${env_file}" \
     --overwrite >/dev/null
+}
+
+finish_deployment() {
+  local env_file="$1"
+  local region="$2"
+  local trigger="$3"
+  local status=0
+
+  publish_runtime_env "$env_file" "$region" || status=$?
+  case "$status" in
+    0)
+      ;;
+    "$RUNTIME_PUBLISH_SKIPPED")
+      log "the published runtime release is owned by production; continuing"
+      ;;
+    *)
+      die "service is deployed but the runtime release was not published"
+      ;;
+  esac
+
+  run_post_deploy_benchmark "$trigger" "$BENCHMARK_SUITE"
 }
 
 run_post_deploy_benchmark() {
@@ -258,9 +284,7 @@ main() {
 
   if [[ "$old_tag" == "$new_tag" ]]; then
     log "${service} already uses ${new_tag}"
-    publish_runtime_env "$env_file" "$region" \
-      || die "service is deployed but the test release state was not published"
-    run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
+    finish_deployment "$env_file" "$region" "${service}@${new_tag}"
     exit 0
   fi
 
@@ -272,9 +296,7 @@ main() {
 
   if deploy_once "$service" "$registry" "$region"; then
     log "deployment succeeded: ${service}@${new_tag}"
-    publish_runtime_env "$env_file" "$region" \
-      || die "service is deployed but the test release state was not published"
-    run_post_deploy_benchmark "${service}@${new_tag}" "$BENCHMARK_SUITE"
+    finish_deployment "$env_file" "$region" "${service}@${new_tag}"
     exit 0
   fi
 
