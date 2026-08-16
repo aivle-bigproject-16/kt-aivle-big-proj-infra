@@ -5,11 +5,11 @@ set -Eeuo pipefail
 readonly DEFAULT_DEPLOY_DIR="/opt/battery/infra"
 readonly DEFAULT_AWS_REGION="ap-northeast-2"
 readonly DEFAULT_RUNTIME_PARAMETER="/kt-aivle-big-proj/prod/runtime-env"
-readonly PRODUCTION_INSTANCE_ID="i-0562ca896665be441"
+readonly RELEASE_RUNTIME_INSTANCE_ID="i-0f243b999a4840674"
 readonly LOCK_FILE="/var/lock/battery-deploy.lock"
 
 # publish_runtime_env() returns this when the host is deliberately not allowed to
-# own the published runtime release. That is an expected outcome on the GPU test
+# own the published runtime release. That is an expected outcome on the G4 QA
 # host, so the caller must not treat it as a deployment failure.
 readonly RUNTIME_PUBLISH_SKIPPED=3
 
@@ -58,7 +58,7 @@ publish_runtime_env() {
     log "unable to determine instance ID; runtime release was not published"
     return 1
   }
-  if [[ "$current_instance_id" != "$PRODUCTION_INSTANCE_ID" ]]; then
+  if [[ "$current_instance_id" != "$RELEASE_RUNTIME_INSTANCE_ID" ]]; then
     log "refusing to publish runtime release from ${current_instance_id}"
     return "$RUNTIME_PUBLISH_SKIPPED"
   fi
