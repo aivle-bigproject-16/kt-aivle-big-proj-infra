@@ -36,8 +36,8 @@ No long-lived AWS access key or SSH private key is stored in GitHub.
 - IAM role: `AivleBigProjectGitHubDeployRole`
 - SSM documents: `AivleBigProjectDeployService`, `AivleBigProjectDeployInfra`,
   `AivleBigProjectRunBenchmark`, `AivleBigProjectSyncFastTest`
-- Production EC2 instance: `i-0562ca896665be441` (`g4dn.xlarge`, Tesla T4, always running)
-- Fast-test EC2 instance: `i-0f243b999a4840674` (`g6e.xlarge`, NVIDIA L40S, start/stop on demand)
+- QA EC2 instance: `i-0562ca896665be441` (`g4dn.xlarge`, Tesla T4, cost-saving QA only)
+- Demo EC2 instance: `i-0f243b999a4840674` (`g6.xlarge`, NVIDIA L4, start/stop on demand)
 - Region: `ap-northeast-2`
 - Infra bundles: `s3://kt-aivle-big-proj-kks/deploy/infra/<git-sha>.tar.gz`
 - Benchmark fixtures: `s3://kt-aivle-big-proj-kks/models/ai-infer/onnx-20260809-01/fixtures/benchmark-v1/`
@@ -47,9 +47,10 @@ Benchmarks are observational until an instance baseline and thresholds are appro
 
 The JSON files in `deployment/aws` are the checked-in source for the IAM policies and SSM documents.
 
-## High-performance GPU test instance
+## On-demand GPU demo instance
 
-The `g6e.xlarge` test host is separate from the always-on production `g4dn.xlarge`.
+The `g6.xlarge` demo host is the release runtime. The `g4dn.xlarge` host is kept
+only for lower-cost QA and does not need to be running during a demonstration.
 Its encrypted 150 GiB gp3 root volume retains all ECR image layers, the AI Infer
 ONNX bundle, and the Hugging Face VLM cache while the instance is stopped.
 Application pushes never start the test instance. On its next manual start,
@@ -71,7 +72,7 @@ effect on it until the host is either restarted or explicitly resynchronised.
 # Pull the latest successful production release into an already running test host.
 .\scripts\manage-fast-test-instance.ps1 -Action sync -Execute
 
-# Gracefully stop Compose, then stop only the g6e test instance.
+# Gracefully stop Compose, then stop only the G6 demo instance.
 .\scripts\manage-fast-test-instance.ps1 -Action stop -Execute
 ```
 
@@ -80,8 +81,8 @@ Actions through the `AivleBigProjectSyncFastTest` document. It is `workflow_disp
 only, because the test host is billed while it runs, and it requires the
 `AWS_FAST_TEST_INSTANCE_ID` repository variable.
 
-The management script refuses to act unless all test-instance identity tags match,
-and it separately verifies that the production `g4dn.xlarge` remains running.
+The management script refuses to act unless all demo-instance identity tags match
+and the target differs from the G4 QA instance.
 `scripts/prepare-fast-test-host.sh` performs the one-time disk preparation and
 installs `battery-fast-test.service`, which starts the cached Compose stack after boot.
 It installs whichever bundle `deploy/infra/latest` points at; set `DEPLOY_BUNDLE_KEY`

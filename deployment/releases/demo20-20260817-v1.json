@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "demo20-20260817-v1",
+  "releaseTag": "release-demo20-20260817-v1",
+  "createdAt": "2026-08-17T03:27:39+09:00",
+  "scope": "on-demand G6 demo service with one calibrated 20-cell LIVE gate",
+  "target": {
+    "instanceId": "i-0f243b999a4840674",
+    "instanceType": "g6e.xlarge",
+    "lifecycle": "start for demonstration window; stop afterward",
+    "g4Role": "cost-saving QA only; not a release runtime"
+  },
+  "images": {
+    "frontend": {
+      "repository": "kt-aivle-big-proj-frontend",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:fc4edb4d5440482e7c3687fa69ee44d90c7e5be3f321e921b9bb14a84a9f8400"
+    },
+    "backend": {
+      "repository": "kt-aivle-big-proj-backend",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:7c1a1626e0873eb5c1576db4123ab56d224c33fd5b19bee229f95898a7a29b12"
+    },
+    "backendAi": {
+      "repository": "kt-aivle-big-proj-backend-ai",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:4f588a89eecc5b59d70e941daa64cd9afeab5e6324338afded48c894e9ab8e2f"
+    },
+    "aiInfer": {
+      "repository": "kt-aivle-big-proj-ai-infer",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:6566dcad394701aef3d55cc3926f4c66a98575fe4dbc1b8e75259817dd07e7a3"
+    },
+    "vlm": {
+      "repository": "kt-aivle-big-proj-vlm",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:7a79a360a106ab8e595b613586de38eb6c86ce6680617d56658a6f58a45ba3c4"
+    }
+  },
+  "source": {
+    "frontendHead": "0fff0fda6c666721d6d76268c3baba39dedfbb29",
+    "frontendArchiveSha256": "72fe80542a25df34bc2cc4944b25664b5702952ba4e7700a73ba32dab6568e7f",
+    "infraHead": "a27caa51f336ae53083d1c3093d4e6cd343815d9",
+    "composeSha256": "3c804d720daad9ded64f9f4965dd0cbc4e19182679981b6d36afceaca2b20590",
+    "composeGpuSha256": "4e913e6afca8e41d2104a6b3e41529716901e4d1a8665566fd24660cd7fde8b5",
+    "runtimeEnvSha256": "77b42767ffda584aecfa8662e01e247858edb6920be164d0a6019f93b345e73b",
+    "activationScriptSha256": "21d5170d08da3ffd1236dd968a783664530707c4d8cb2913abf56645b5fefcc5"
+  },
+  "dataset": {
+    "version": "v1.8-demo-model-calibrated-v2",
+    "manifest": "s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/manifests/runtime-qa-v18-demo-v2/runtime-wave-01.csv",
+    "manifestSha256": "5ddadc8ba4c6122e582be67bdb7fd7130b92bb4028e9dbbd3994e318519963aa",
+    "validationRunId": 20,
+    "completedInspections": 40,
+    "matchedCellVerdicts": "20/20",
+    "analysis": "s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/replay/demo20-20260817-v1/wave-01-run-20-analysis.json",
+    "analysisSha256": "5abbe5c1bc85545862c65c17d69f77200fd254467885ee3c09d7e56f14a3601e"
+  },
+  "validation": {
+    "authMe": "200 twice with a signed QA session and complete profile fields",
+    "frontendTests": "42/42 passed",
+    "frontendProductionBuild": "passed",
+    "individualReport": "COMPLETED; reportId=5",
+    "dailyReport": "COMPLETED; reportId=3",
+    "reportEvidence": "s3://kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/reports/demo20-20260817-v1/run-20-report-qa.json",
+    "reportEvidenceSha256": "76c8ea296df6bd60ff2cb17dd7d6ceb8ede7b439a9f55bcbab960a7936b241cb"
+  },
+  "policy": {
+    "releaseGate": "one calibrated 20-cell LIVE run",
+    "hundredCellGate": "postponed",
+    "ctQualityGate": "shadow temporary waiver; no CT recapture product requirement",
+    "accuracyClaim": "demo stability only; not unbiased model accuracy"
+  }
+}
