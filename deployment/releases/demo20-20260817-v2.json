@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "demo20-20260817-v2",
+  "createdAt": "2026-08-17T04:13:53+09:00",
+  "scope": "v1 demo20 release plus Sim Control defaults batchSize=5 and batteryCellCount=20",
+  "target": {
+    "instanceId": "i-0f243b999a4840674",
+    "instanceType": "g6.xlarge",
+    "lifecycle": "start only with manage-demo20-release.ps1; stop after demonstration"
+  },
+  "images": {
+    "frontend": {
+      "repository": "kt-aivle-big-proj-frontend",
+      "tag": "release-demo20-20260817-v2",
+      "digest": "sha256:0829551a10ed19e4e80c913c272e76974ba0ca0b64b044f78379d3eadd35b8e6"
+    },
+    "backend": {
+      "repository": "kt-aivle-big-proj-backend",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:7c1a1626e0873eb5c1576db4123ab56d224c33fd5b19bee229f95898a7a29b12"
+    },
+    "backendAi": {
+      "repository": "kt-aivle-big-proj-backend-ai",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:4f588a89eecc5b59d70e941daa64cd9afeab5e6324338afded48c894e9ab8e2f"
+    },
+    "aiInfer": {
+      "repository": "kt-aivle-big-proj-ai-infer",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:6566dcad394701aef3d55cc3926f4c66a98575fe4dbc1b8e75259817dd07e7a3"
+    },
+    "vlm": {
+      "repository": "kt-aivle-big-proj-vlm",
+      "tag": "release-demo20-20260817-v1",
+      "digest": "sha256:7a79a360a106ab8e595b613586de38eb6c86ce6680617d56658a6f58a45ba3c4"
+    }
+  },
+  "source": {
+    "frontendHead": "0fff0fda6c666721d6d76268c3baba39dedfbb29",
+    "frontendArchiveSha256": "b628ac1c6ddbb35eeaddea44e37029a27f0917343842ebfb98ec446db9e5f23d",
+    "composeSha256": "3c804d720daad9ded64f9f4965dd0cbc4e19182679981b6d36afceaca2b20590",
+    "composeGpuSha256": "4e913e6afca8e41d2104a6b3e41529716901e4d1a8665566fd24660cd7fde8b5",
+    "runtimeEnvSha256": "3264d3f45955a4f5db79f4522b9a965c0170fa7fe8b3ff7b6877277e1fad2a61",
+    "activationScriptSha256": "d36931d228f01e8d817f05b492b50d337b24c4cbdf9a2275683990a07ec88dbc"
+  },
+  "dataset": {
+    "version": "v1.8-demo-model-calibrated-v2",
+    "availableLogicalCells": 20,
+    "initialCtImages": 800,
+    "initialRgbImages": 800,
+    "manifestSha256": "5ddadc8ba4c6122e582be67bdb7fd7130b92bb4028e9dbbd3994e318519963aa",
+    "inheritedValidationRunId": 20,
+    "inheritedMatchedCellVerdicts": "20/20"
+  },
+  "simulationContract": {
+    "defaultBatchSize": 5,
+    "defaultBatteryCellCount": 20,
+    "batchSize": "any positive integer; batches use ceil(total/batchSize)",
+    "batteryCellCount": "1..20 with current seeded data; requests above 20 return HTTP 400",
+    "datasetCycling": false
+  },
+  "policy": {
+    "releaseGate": "frontend-only smoke plus inherited v1 20-cell LIVE evidence",
+    "hundredCellGate": "postponed",
+    "accuracyClaim": "demo stability only; not unbiased model accuracy"
+  }
+}

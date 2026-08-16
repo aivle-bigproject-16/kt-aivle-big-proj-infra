@@ -2,8 +2,8 @@
 
 set -Eeuo pipefail
 
-readonly DEFAULT_EXPECTED_INSTANCE_TYPE="g6e.xlarge"
-readonly DEFAULT_EXPECTED_GPU="NVIDIA L40S"
+readonly DEFAULT_EXPECTED_INSTANCE_TYPE="g6.xlarge"
+readonly DEFAULT_EXPECTED_GPU="NVIDIA L4"
 readonly DEFAULT_REGION="ap-northeast-2"
 readonly DEFAULT_BUCKET="kt-aivle-big-proj-kks"
 readonly DEFAULT_LATEST_KEY="deploy/infra/latest"

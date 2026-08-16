@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $ExpectedName = "big-project-gpu-fast-test"
 $ExpectedPurpose = "high-performance-gpu-test"
-$ExpectedType = "g6e.xlarge"
+$ExpectedType = "g6.xlarge"
 $ExpectedProductionName = "big-project-gpu-serving"
 $ExpectedProductionType = "g4dn.xlarge"
 
@@ -47,9 +47,8 @@ function Get-Instance {
 function Assert-SafeTargets {
     $production = Get-Instance -Id $ProductionInstanceId
     if ($production.Name -ne $ExpectedProductionName -or
-        $production.Type -ne $ExpectedProductionType -or
-        $production.State -ne "running") {
-        throw "Production protection check failed. Expected running $ExpectedProductionName/$ExpectedProductionType."
+        $production.Type -ne $ExpectedProductionType) {
+        throw "QA instance protection check failed. Expected $ExpectedProductionName/$ExpectedProductionType."
     }
 
     if ($InstanceId -eq $ProductionInstanceId) {
@@ -198,7 +197,7 @@ Write-Host "Instance:   $($target.Id)"
 Write-Host "State:      $($target.State)"
 Write-Host "Type:       $($target.Type)"
 Write-Host "Public IP:  $($target.PublicIp)"
-Write-Host "Production: $ProductionInstanceId (protected and running)"
+Write-Host "QA host:    $ProductionInstanceId (protected; running state is optional)"
 
 switch ($Action) {
     "status" {

@@ -211,8 +211,11 @@ services:
       CT_QUALITY_THRESHOLD: ${CT_QUALITY_THRESHOLD:--0.6227158308029175}
       CT_DEFECT_CONF_THRESHOLD: ${CT_DEFECT_CONF_THRESHOLD:-0.05}
       RGB_QUALITY_FAIL_THRESHOLD: ${RGB_QUALITY_FAIL_THRESHOLD:-0.3}
-      # 셀 단위 촬영실패는 FAIL 이미지 비율이 이 값 이상일 때만 확정한다.
-      CELL_CAPTURE_FAIL_RATIO_THRESHOLD: ${CELL_CAPTURE_FAIL_RATIO_THRESHOLD:-0.05}
+      # 모달리티별 유효 이미지 커버리지. 40장 기준 32장 이상이 통과다.
+      CELL_MIN_VALID_COVERAGE: ${CELL_MIN_VALID_COVERAGE:-0.8}
+      # RGB는 단일 이미지 OR가 아니라 셀 내 REJECT 이미지 비율로 판정한다.
+      RGB_CELL_REJECT_RATE_THRESHOLD: ${RGB_CELL_REJECT_RATE_THRESHOLD:-0.7}
+      CT_QUALITY_GATE_MODE: ${CT_QUALITY_GATE_MODE:-enforce}
 
       # 이미지는 BE 가 발급한 presigned URL 로 ai-infer 가 직접 GET 한다.
       IMAGE_DOWNLOAD_TIMEOUT_SECONDS: ${IMAGE_DOWNLOAD_TIMEOUT_SECONDS:-10}
@@ -228,7 +231,7 @@ services:
       CALLBACK_TIMEOUT_SECONDS: ${CALLBACK_TIMEOUT_SECONDS:-10}
       CALLBACK_MAX_ATTEMPTS: ${CALLBACK_MAX_ATTEMPTS:-3}
 
-      # 동시 분석 워커와 대기열. g6e.xlarge 는 vCPU 가 4개뿐이고
+      # 동시 분석 워커와 대기열. g6.xlarge 는 vCPU 가 4개뿐이고
       # CT 의 SAHI 타일링이 CPU 바운드라 여기를 올리면 CPU 가 먼저 포화한다.
       # 실측 전까지 기본값을 유지한다.
       CELL_ANALYSIS_WORKERS: ${CELL_ANALYSIS_WORKERS:-1}
