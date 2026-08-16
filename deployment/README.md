@@ -53,14 +53,10 @@ The `g6.xlarge` demo host is the release runtime. The `g4dn.xlarge` host is kept
 only for lower-cost QA and does not need to be running during a demonstration.
 Its encrypted 150 GiB gp3 root volume retains all ECR image layers, the AI Infer
 ONNX bundle, and the Hugging Face VLM cache while the instance is stopped.
-Application pushes never start the test instance. On its next manual start,
-`battery-fast-test.service` reads the latest successful production infra pointer and
-encrypted tag set, pulls all accumulated images once, and only then starts services.
-
-Deployments are one-way: the production deployment pipeline never writes to the test
-host, and the test host never publishes the runtime release pointer that production
-owns. A push that lands while the test host is already running therefore has no
-effect on it until the host is either restarted or explicitly resynchronised.
+Default-branch deployments target this instance and publish its deployed tag set.
+The instance must therefore be running before a release PR is merged. Starting the
+instance through the Demo20 release script restores the pinned demo release before
+new service deployments are applied.
 
 ```powershell
 # State and the current URL. The public IP changes after a stop/start cycle.
