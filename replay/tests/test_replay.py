@@ -297,6 +297,44 @@ def test_replays_only_recorded_individual_report_and_maps_dynamic_fields():
         assert invalid_daily.status_code == 422
 
 
+def test_report_catalog_v2_maps_multiple_cells_and_source_inspection_ids():
+    payload = report_fixture()
+    payload["schemaVersion"] = 2
+    payload.pop("cellSerialNo")
+    payload.pop("individual")
+    payload["individuals"] = [
+        {
+            "cellSerialNo": "SIM-0001",
+            "inspectionId": 7,
+            "sourceInspectionIds": [7, 8],
+            "report": {
+                "status": "COMPLETED",
+                "title": "Cell [SIM-0001] 개별 검사 리포트",
+                "content": "대표 7 / 연결 7, 8",
+                "failureReason": None,
+            },
+        },
+        {
+            "cellSerialNo": "SIM-0002",
+            "inspectionId": 9,
+            "sourceInspectionIds": [9, 10],
+            "report": {
+                "status": "COMPLETED",
+                "title": "Cell [SIM-0002] 개별 검사 리포트",
+                "content": "대표 9 / 연결 9, 10",
+                "failureReason": None,
+            },
+        },
+    ]
+
+    catalog = ReportCatalog(payload, "b" * 64)
+    response = catalog.individual_response("SIM-0002", 109, [109, 110])
+
+    assert response.title == "Cell [SIM-0002] 개별 검사 리포트"
+    assert "109" in response.content
+    assert "110" in response.content
+
+
 def test_analysis_fixture_digest_matches_serialized_bytes():
     payload = analysis_fixture()
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

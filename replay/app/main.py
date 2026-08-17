@@ -369,6 +369,7 @@ def create_app(
             return reports.individual_response(
                 request.cellSerialNo,
                 request.inspectionId,
+                request.sourceInspectionIds,
             )
         except FixtureMiss as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -400,8 +401,9 @@ def create_app(
             "reports": {
                 "enabled": reports is not None,
                 "sha256": reports.digest if reports else None,
+                "individualCount": len(reports.individuals) if reports else 0,
                 "scope": (
-                    "individual recorded; daily deterministic summary"
+                    "individual catalog; daily deterministic summary"
                     if reports
                     else None
                 ),

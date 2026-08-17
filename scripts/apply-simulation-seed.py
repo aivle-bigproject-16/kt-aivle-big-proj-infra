@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -12,6 +13,8 @@ import psycopg
 
 VERSION_PREFIX = "simulation-runtime-v17-wave"
 BUCKET = "kt-aivle-big-proj-kks"
+AXIS_VOLUMES = {"x": 100, "y": 254, "z": 871}
+SLICE_PATTERN = re.compile(r"_(x|y|z)_(\d+)(?:__|\.|_)", re.IGNORECASE)
 DEFAULT_DB_URL = (
     "postgresql://aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres"
     "?sslmode=require"
@@ -114,6 +117,12 @@ def load_manifest(path):
         if expected_path not in f"/{row['object_key']}":
             raise ValueError(f"capture path mismatch: {row['object_key']}")
 
+        match = SLICE_PATTERN.search(row["object_key"])
+        axis = (row.get("axis") or (match.group(1) if match else "")).lower()
+        row["axis"] = axis or None
+        row["slice_index"] = int(match.group(2)) if match else None
+        row["volume"] = AXIS_VOLUMES.get(axis)
+
         identity = (cell, row["bucket_name"], row["object_key"])
         if identity in seen:
             raise ValueError(f"duplicate source inside a cell: {identity}")
@@ -201,7 +210,10 @@ def apply(
                     capture_set varchar(20) NOT NULL,
                     bucket_name varchar(100) NOT NULL,
                     object_key varchar(500) NOT NULL,
-                    quality_label varchar(10) NOT NULL
+                    quality_label varchar(10) NOT NULL,
+                    axis varchar(20),
+                    slice_index bigint,
+                    volume bigint
                 ) ON COMMIT DROP
                 """
             )
@@ -213,7 +225,10 @@ def apply(
                     %(capture_set)s,
                     %(bucket_name)s,
                     %(object_key)s,
-                    %(quality_label)s
+                    %(quality_label)s,
+                    %(axis)s,
+                    %(slice_index)s,
+                    %(volume)s
                 )
                 """,
                 rows,
@@ -237,6 +252,9 @@ def apply(
                     object_key,
                     storage_type,
                     file_name,
+                    axis,
+                    "index",
+                    volume,
                     created_at
                 )
                 SELECT
@@ -247,6 +265,9 @@ def apply(
                     stage.object_key,
                     'S3',
                     regexp_replace(stage.object_key, '^.*/', ''),
+                    stage.axis,
+                    stage.slice_index,
+                    stage.volume,
                     now()
                 FROM simulation_seed_stage AS stage
                 JOIN public.battery_cell AS cell
@@ -256,7 +277,10 @@ def apply(
                     image_type = EXCLUDED.image_type,
                     capture_set = EXCLUDED.capture_set,
                     storage_type = EXCLUDED.storage_type,
-                    file_name = EXCLUDED.file_name
+                    file_name = EXCLUDED.file_name,
+                    axis = EXCLUDED.axis,
+                    "index" = EXCLUDED."index",
+                    volume = EXCLUDED.volume
                 """
             )
             cursor.execute(

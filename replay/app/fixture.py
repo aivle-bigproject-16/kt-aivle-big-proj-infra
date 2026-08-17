@@ -342,42 +342,66 @@ def _normalize_failure_type(value: Any) -> str:
 
 class ReportCatalog:
     def __init__(self, payload: dict[str, Any], digest: str):
-        if payload.get("schemaVersion") != 1:
-            raise FixtureError("report fixture schemaVersion must be 1")
-        if not isinstance(payload.get("individual"), dict):
-            raise FixtureError("report fixture is missing individual response")
+        version = payload.get("schemaVersion")
+        if version not in {1, 2}:
+            raise FixtureError("report fixture schemaVersion must be 1 or 2")
         if not isinstance(payload.get("daily"), dict):
             raise FixtureError("report fixture is missing daily response")
         self.digest = digest
-        self.cell_serial_no = str(payload.get("cellSerialNo") or "")
         self.report_date = str(payload.get("reportDate") or "")
-        self.recorded_inspection_id = payload.get("individual", {}).get(
-            "inspectionId", payload.get("inspectionId")
-        )
-        self.individual = payload["individual"]
         self.daily = payload["daily"]
+        if version == 1:
+            if not isinstance(payload.get("individual"), dict):
+                raise FixtureError("report fixture is missing individual response")
+            cell_serial_no = str(payload.get("cellSerialNo") or "")
+            entries = [{
+                "cellSerialNo": cell_serial_no,
+                "inspectionId": payload.get("individual", {}).get(
+                    "inspectionId", payload.get("inspectionId")
+                ),
+                "sourceInspectionIds": [],
+                "report": payload["individual"],
+            }]
+        else:
+            entries = payload.get("individuals")
+            if not isinstance(entries, list) or not entries:
+                raise FixtureError("report fixture is missing individual responses")
+        self.individuals = {
+            str(entry.get("cellSerialNo") or ""): entry
+            for entry in entries
+        }
+        if "" in self.individuals or len(self.individuals) != len(entries):
+            raise FixtureError("individual report cells must be unique and non-empty")
 
     def individual_response(
         self,
         cell_serial_no: str,
         inspection_id: int | None,
+        source_inspection_ids: list[int] | None = None,
     ) -> ReportResponse:
-        if cell_serial_no != self.cell_serial_no:
+        entry = self.individuals.get(cell_serial_no)
+        if entry is None:
             raise FixtureMiss(
                 f"individual report fixture miss for cell {cell_serial_no}"
             )
-        title = _replace(self.individual.get("title"), self.cell_serial_no, cell_serial_no)
+        report = entry.get("report") or entry.get("individual")
+        if not isinstance(report, dict):
+            raise FixtureError(f"individual report is invalid for {cell_serial_no}")
+        title = _replace(report.get("title"), cell_serial_no, cell_serial_no)
         content = _replace(
-            self.individual.get("content"), self.cell_serial_no, cell_serial_no
+            report.get("content"), cell_serial_no, cell_serial_no
         )
         if inspection_id is not None:
-            old_id = self.recorded_inspection_id
+            old_id = entry.get("inspectionId")
             if old_id is None:
-                match = re.search(r"Inspection ID:\*\*\s*(\d+)", content or "")
+                match = re.search(r"(?:Inspection|검사) ID:\*\*\s*(\d+)", content or "")
                 old_id = match.group(1) if match else None
             if old_id is not None:
                 content = _replace(content, str(old_id), str(inspection_id))
-        return _report_response(self.individual, title, content)
+        recorded_sources = entry.get("sourceInspectionIds") or []
+        for old_id, new_id in zip(recorded_sources, source_inspection_ids or []):
+            content = _replace(content, str(old_id), str(new_id))
+        return _report_response(report, title, content)
 
     def daily_response(self, daily_data: DailyReportData) -> ReportResponse:
         requested_date = daily_data.reportDate
