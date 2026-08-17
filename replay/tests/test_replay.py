@@ -310,7 +310,7 @@ def test_report_catalog_v2_maps_multiple_cells_and_source_inspection_ids():
             "report": {
                 "status": "COMPLETED",
                 "title": "Cell [SIM-0001] 개별 검사 리포트",
-                "content": "대표 7 / 연결 7, 8",
+                "content": "**대표 검사 ID:** 7\n**연결 검사 ID:** [7, 8]",
                 "failureReason": None,
             },
         },
@@ -321,7 +321,7 @@ def test_report_catalog_v2_maps_multiple_cells_and_source_inspection_ids():
             "report": {
                 "status": "COMPLETED",
                 "title": "Cell [SIM-0002] 개별 검사 리포트",
-                "content": "대표 9 / 연결 9, 10",
+                "content": "**대표 검사 ID:** 9\n**연결 검사 ID:** [9, 10]",
                 "failureReason": None,
             },
         },
@@ -331,8 +331,9 @@ def test_report_catalog_v2_maps_multiple_cells_and_source_inspection_ids():
     response = catalog.individual_response("SIM-0002", 109, [109, 110])
 
     assert response.title == "Cell [SIM-0002] 개별 검사 리포트"
-    assert "109" in response.content
-    assert "110" in response.content
+    assert "**대표 검사 ID:** 109" in response.content
+    assert "**연결 검사 ID:** [109, 110]" in response.content
+    assert "10109" not in response.content
 
 
 def test_analysis_fixture_digest_matches_serialized_bytes():

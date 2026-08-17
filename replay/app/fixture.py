@@ -391,16 +391,22 @@ class ReportCatalog:
         content = _replace(
             report.get("content"), cell_serial_no, cell_serial_no
         )
+        recorded_sources = [
+            int(value) for value in (entry.get("sourceInspectionIds") or [])
+        ]
+        current_sources = [int(value) for value in (source_inspection_ids or [])]
+        content = _replace_inspection_id_list(
+            content, recorded_sources, current_sources
+        )
         if inspection_id is not None:
             old_id = entry.get("inspectionId")
             if old_id is None:
                 match = re.search(r"(?:Inspection|검사) ID:\*\*\s*(\d+)", content or "")
                 old_id = match.group(1) if match else None
             if old_id is not None:
-                content = _replace(content, str(old_id), str(inspection_id))
-        recorded_sources = entry.get("sourceInspectionIds") or []
-        for old_id, new_id in zip(recorded_sources, source_inspection_ids or []):
-            content = _replace(content, str(old_id), str(new_id))
+                content = _replace_representative_inspection_id(
+                    content, int(old_id), int(inspection_id)
+                )
         return _report_response(report, title, content)
 
     def daily_response(self, daily_data: DailyReportData) -> ReportResponse:
@@ -448,6 +454,38 @@ def _replace(value: Any, old: str, new: str) -> str | None:
         return None
     text = str(value)
     return text.replace(old, new) if old else text
+
+
+def _replace_inspection_id_list(
+    content: str | None,
+    recorded: list[int],
+    current: list[int],
+) -> str | None:
+    if content is None or not recorded or len(recorded) != len(current):
+        return content
+    replacements = (
+        (str(recorded), str(current)),
+        (", ".join(str(value) for value in recorded),
+         ", ".join(str(value) for value in current)),
+    )
+    result = content
+    for old, new in replacements:
+        result = result.replace(old, new)
+    return result
+
+
+def _replace_representative_inspection_id(
+    content: str | None,
+    recorded: int,
+    current: int,
+) -> str | None:
+    if content is None or recorded == current:
+        return content
+    pattern = re.compile(
+        rf"((?:\*\*)?(?:대표\s*)?(?:Inspection|검사) ID:(?:\*\*)?\s*){recorded}\b",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda match: f"{match.group(1)}{current}", content)
 
 
 def _report_response(row, title, content) -> ReportResponse:
