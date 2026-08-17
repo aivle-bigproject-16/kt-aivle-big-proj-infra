@@ -1,0 +1,310 @@
+import hashlib
+import json
+import time
+from datetime import datetime, timezone
+
+from fastapi.testclient import TestClient
+import pytest
+
+from app.fixture import (
+    FixtureError,
+    ReplayCatalog,
+    ReportCatalog,
+    load_verified_json,
+    request_fingerprint,
+)
+from app.main import Settings, create_app
+
+
+def analysis_fixture():
+    image = {
+        "id": 11,
+        "inspection_id": 7,
+        "image_type": "CT",
+        "bucket_name": "battery",
+        "object_key": "approved/ct/one.jpg",
+        "source_object_key": "approved/ct/one.jpg",
+        "attempt_no": 1,
+    }
+    fingerprint = request_fingerprint([image])
+    return {
+        "schemaVersion": 1,
+        "mode": "LIVE_RECORD",
+        "inspections": [
+            {
+                "id": 7,
+                "cell_serial_no": "SIM-0001",
+                "status": "COMPLETED",
+                "final_label": "REJECT",
+                "failure_type": None,
+                "failure_reason": None,
+            }
+        ],
+        "inspectionImages": [image],
+        "defectResults": [
+            {
+                "id": 20,
+                "inspection_id": 7,
+                "inspection_image_id": 11,
+                "image_type": "CT",
+                "label": "REJECT",
+                "defect_type": "CRACK",
+                "confidence": "0.9100",
+                "bbox": {"x": 1, "y": 2, "width": 3, "height": 4},
+                "raw_response": {
+                    "label": "REJECT",
+                    "confidence": 0.91,
+                    "defects": [
+                        {
+                            "defectType": "CRACK",
+                            "confidence": 0.91,
+                            "bbox": {
+                                "x": 1,
+                                "y": 2,
+                                "width": 3,
+                                "height": 4,
+                            },
+                        }
+                    ],
+                },
+                "latency_ms": 321,
+                "attempt_no": 1,
+            }
+        ],
+        "replayIndex": [
+            {
+                "requestFingerprint": fingerprint,
+                "inspectionId": 7,
+                "attemptNo": 1,
+                "imageCount": 1,
+                "imageTypes": ["CT"],
+            }
+        ],
+    }
+
+
+def report_fixture():
+    return {
+        "schemaVersion": 1,
+        "cellSerialNo": "SIM-0001",
+        "reportDate": "2026-08-16",
+        "individual": {
+            "status": "COMPLETED",
+            "title": "Cell [SIM-0001] 개별 검사 리포트",
+            "content": "**Inspection ID:** 7",
+            "failureReason": None,
+        },
+        "daily": {
+            "status": "COMPLETED",
+            "title": "2026-08-16 총 요약 보고서",
+            "content": "2026-08-16 recorded narrative",
+            "failureReason": None,
+        },
+    }
+
+
+def settings():
+    return Settings(
+        fixture_uri="unused",
+        fixture_sha256="a" * 64,
+        report_fixture_uri="unused",
+        report_fixture_sha256="b" * 64,
+        aws_region="ap-northeast-2",
+        internal_api_key="test-internal-key",
+        backend_callback_url=(
+            "http://backend:8080/internal/ai/callbacks/cell"
+        ),
+        delay_ms=0,
+        max_pending=4,
+        callback_timeout_seconds=1,
+        callback_max_attempts=1,
+    )
+
+
+def request_body(request_id="current-request", object_key="approved/ct/one.jpg"):
+    return {
+        "requestId": request_id,
+        "batchId": 100,
+        "inspectionId": 200,
+        "batteryCellId": 300,
+        "cellSerialNo": "SIM-0001",
+        "requestedAt": datetime.now(timezone.utc).isoformat(),
+        "callbackUrl": "http://backend:8080/internal/ai/callbacks/cell",
+        "images": [
+            {
+                "imageId": 400,
+                "imageType": "CT",
+                "bucketName": "battery",
+                "objectKey": object_key,
+            }
+        ],
+    }
+
+
+def build_client(callbacks):
+    async def capture_callback(url, payload, internal_key, timeout):
+        callbacks.append((url, payload, internal_key, timeout))
+
+    catalog = ReplayCatalog(analysis_fixture(), "a" * 64)
+    reports = ReportCatalog(report_fixture(), "b" * 64)
+    app = create_app(settings(), catalog, reports, capture_callback)
+    return TestClient(app)
+
+
+def wait_for_callbacks(callbacks, count):
+    deadline = time.monotonic() + 1
+    while len(callbacks) < count and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_replays_recorded_result_with_current_ids_and_is_idempotent():
+    callbacks = []
+    with build_client(callbacks) as client:
+        response = client.post(
+            "/ai/cells/analyze",
+            json=request_body(),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert response.status_code == 202
+        assert response.json()["inspectionId"] == 200
+        wait_for_callbacks(callbacks, 1)
+        assert len(callbacks) == 1
+
+        payload = callbacks[0][1]
+        assert payload["requestId"] == "current-request"
+        assert payload["batchId"] == 100
+        assert payload["inspectionId"] == 200
+        assert payload["batteryCellId"] == 300
+        assert payload["imageResults"][0]["imageId"] == 400
+        assert payload["imageResults"][0]["defects"][0]["defectType"] == "CRACK"
+        assert payload["finalLabel"] == "REJECT"
+
+        duplicate = client.post(
+            "/ai/cells/analyze",
+            json=request_body(),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert duplicate.status_code == 202
+        time.sleep(0.03)
+        assert len(callbacks) == 1
+
+        health = client.get("/health").json()
+        assert health["mode"] == "REPLAY"
+        assert health["metrics"]["hits"] == 1
+        assert health["metrics"]["duplicates"] == 1
+        assert health["metrics"]["callbackSuccess"] == 1
+
+
+def test_rejects_unauthorized_miss_and_request_id_conflict():
+    callbacks = []
+    with build_client(callbacks) as client:
+        assert client.post("/ai/cells/analyze", json=request_body()).status_code == 401
+        wrong_callback = request_body(request_id="wrong-callback")
+        wrong_callback["callbackUrl"] = "http://untrusted/callback"
+        assert client.post(
+            "/ai/cells/analyze",
+            json=wrong_callback,
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        ).status_code == 400
+        miss = client.post(
+            "/ai/cells/analyze",
+            json=request_body(object_key="not-recorded.jpg"),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert miss.status_code == 404
+
+        accepted = client.post(
+            "/ai/cells/analyze",
+            json=request_body(),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert accepted.status_code == 202
+        conflict_body = request_body()
+        conflict_body["inspectionId"] = 201
+        conflict = client.post(
+            "/ai/cells/analyze",
+            json=conflict_body,
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert conflict.status_code == 409
+
+
+def test_replays_only_recorded_individual_report_and_maps_dynamic_fields():
+    callbacks = []
+    with build_client(callbacks) as client:
+        individual = client.post(
+            "/vlm/reports/individual",
+            json={
+                "cellSerialNo": "SIM-0001",
+                "inspectionId": 999,
+                "totalImages": 1,
+                "cellSize": None,
+                "pointGroups": [],
+                "ctVoidRatio": None,
+                "rgbDefectRate": None,
+                "defectInfo": [],
+            },
+        )
+        assert individual.status_code == 200
+        assert "999" in individual.json()["content"]
+
+        missing = client.post(
+            "/vlm/reports/individual",
+            json={
+                "cellSerialNo": "SIM-0002",
+                "inspectionId": 1000,
+                "totalImages": 1,
+                "cellSize": None,
+                "pointGroups": [],
+                "ctVoidRatio": None,
+                "rgbDefectRate": None,
+                "defectInfo": [],
+            },
+        )
+        assert missing.status_code == 404
+
+        daily = client.post(
+            "/vlm/reports/daily",
+            json={
+                "daily_data": {
+                    "reportDate": "2026-08-17",
+                    "summaryData": {
+                        "totalCount": 40,
+                        "passCount": 25,
+                        "rejectCount": 15,
+                        "failedCount": 0,
+                        "prevTotalCount": 180,
+                        "prevRejectCount": 73,
+                        "defects": [
+                            {"defectType": "CRACK", "count": 1254},
+                            {"defectType": "SPOT", "count": 936},
+                        ],
+                    },
+                }
+            },
+        )
+        assert daily.status_code == 200
+        assert "2026-08-17" in daily.json()["title"]
+        assert "|총 검사 수|40건|" in daily.json()["content"]
+        assert "|양품 (PASS)|25건|" in daily.json()["content"]
+        assert "|불량 (REJECT)|15건|" in daily.json()["content"]
+        assert "140" not in daily.json()["content"]
+
+        invalid_daily = client.post(
+            "/vlm/reports/daily",
+            json={"daily_data": {"reportDate": "2026-08-17"}},
+        )
+        assert invalid_daily.status_code == 422
+
+
+def test_analysis_fixture_digest_matches_serialized_bytes():
+    payload = analysis_fixture()
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    assert len(hashlib.sha256(data).hexdigest()) == 64
+
+
+def test_fixture_loader_fails_closed_on_sha_mismatch(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps(analysis_fixture()), encoding="utf-8")
+    with pytest.raises(FixtureError, match="SHA-256 mismatch"):
+        load_verified_json(str(fixture), "0" * 64, "ap-northeast-2")

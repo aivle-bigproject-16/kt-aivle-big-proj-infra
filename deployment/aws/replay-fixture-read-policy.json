@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadApprovedReplayFixtures",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/replay/demo20-20260817-v1/*",
+        "arn:aws:s3:::kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/replay/demo20-pass15-reject3-fail2-v1/*",
+        "arn:aws:s3:::kt-aivle-big-proj-kks/simulations/server-simulation-v1.8/reports/demo20-20260817-v1/*"
+      ]
+    }
+  ]
+}

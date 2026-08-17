@@ -80,13 +80,14 @@ main() {
   tar -xzf "$archive" -C "$release_dir"
 
   local required_file
-  for required_file in compose.yaml compose.gpu.yaml scripts/deploy-service.sh scripts/deploy-infra.sh scripts/post-deploy-benchmark.sh; do
+  for required_file in compose.yaml compose.gpu.yaml scripts/deploy-service.sh scripts/deploy-infra.sh scripts/post-deploy-benchmark.sh scripts/switch-serving-mode.sh; do
     [[ -f "$release_dir/$required_file" ]] || die "bundle is missing ${required_file}"
   done
 
   bash -n "$release_dir/scripts/deploy-service.sh"
   bash -n "$release_dir/scripts/deploy-infra.sh"
   bash -n "$release_dir/scripts/post-deploy-benchmark.sh"
+  bash -n "$release_dir/scripts/switch-serving-mode.sh"
 
   build_compose_command \
     "$deploy_dir" \
@@ -110,16 +111,25 @@ main() {
   if [[ -f /usr/local/bin/battery-post-deploy-benchmark ]]; then
     cp -a -- /usr/local/bin/battery-post-deploy-benchmark "$backup_dir/battery-post-deploy-benchmark"
   fi
+  if [[ -f /usr/local/bin/battery-switch-serving-mode ]]; then
+    cp -a -- /usr/local/bin/battery-switch-serving-mode "$backup_dir/battery-switch-serving-mode"
+  fi
 
   install -o root -g root -m 0644 "$release_dir/compose.yaml" "$deploy_dir/compose.yaml"
   install -o root -g root -m 0644 "$release_dir/compose.gpu.yaml" "$deploy_dir/compose.gpu.yaml"
   install -o root -g root -m 0755 "$release_dir/scripts/deploy-service.sh" /usr/local/bin/battery-deploy-service
   install -o root -g root -m 0755 "$release_dir/scripts/deploy-infra.sh" /usr/local/bin/battery-deploy-infra
   install -o root -g root -m 0755 "$release_dir/scripts/post-deploy-benchmark.sh" /usr/local/bin/battery-post-deploy-benchmark
+  install -o root -g root -m 0755 "$release_dir/scripts/switch-serving-mode.sh" /usr/local/bin/battery-switch-serving-mode
 
   if [[ -d "$release_dir/stub" ]]; then
     mkdir -p "$deploy_dir/stub"
     cp -a -- "$release_dir/stub/." "$deploy_dir/stub/"
+  fi
+
+  if [[ -d "$release_dir/replay" ]]; then
+    mkdir -p "$deploy_dir/replay"
+    cp -a -- "$release_dir/replay/." "$deploy_dir/replay/"
   fi
 
   build_compose_command \
@@ -146,6 +156,11 @@ main() {
   install -o root -g root -m 0755 "$backup_dir/battery-deploy-service" /usr/local/bin/battery-deploy-service
   if [[ -f "$backup_dir/battery-post-deploy-benchmark" ]]; then
     install -o root -g root -m 0755 "$backup_dir/battery-post-deploy-benchmark" /usr/local/bin/battery-post-deploy-benchmark
+  fi
+  if [[ -f "$backup_dir/battery-switch-serving-mode" ]]; then
+    install -o root -g root -m 0755 "$backup_dir/battery-switch-serving-mode" /usr/local/bin/battery-switch-serving-mode
+  else
+    rm -f -- /usr/local/bin/battery-switch-serving-mode
   fi
 
   build_compose_command \

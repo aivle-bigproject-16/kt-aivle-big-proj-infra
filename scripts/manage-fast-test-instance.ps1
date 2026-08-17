@@ -5,7 +5,6 @@ param(
 
     [switch]$Execute,
     [string]$InstanceId = "i-0f243b999a4840674",
-    [string]$ProductionInstanceId = "i-0562ca896665be441",
     [string]$Profile = "default",
     [string]$Region = "ap-northeast-2",
     [int]$ReadyTimeoutSeconds = 300
@@ -16,8 +15,6 @@ $ErrorActionPreference = "Stop"
 $ExpectedName = "big-project-gpu-fast-test"
 $ExpectedPurpose = "high-performance-gpu-test"
 $ExpectedType = "g6.xlarge"
-$ExpectedProductionName = "big-project-gpu-serving"
-$ExpectedProductionType = "g4dn.xlarge"
 
 function Invoke-Aws {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -39,27 +36,16 @@ function Get-Instance {
     $json = Invoke-Aws ec2 describe-instances `
         --region $Region `
         --instance-ids $Id `
-        --query "Reservations[0].Instances[0].{Id:InstanceId,State:State.Name,Type:InstanceType,Name:Tags[?Key=='Name']|[0].Value,Purpose:Tags[?Key=='Purpose']|[0].Value,ProductionInstanceId:Tags[?Key=='ProductionInstanceId']|[0].Value,PublicIp:PublicIpAddress,PrivateIp:PrivateIpAddress,HopLimit:MetadataOptions.HttpPutResponseHopLimit}" `
+        --query "Reservations[0].Instances[0].{Id:InstanceId,State:State.Name,Type:InstanceType,Name:Tags[?Key=='Name']|[0].Value,Purpose:Tags[?Key=='Purpose']|[0].Value,PublicIp:PublicIpAddress,PrivateIp:PrivateIpAddress,HopLimit:MetadataOptions.HttpPutResponseHopLimit}" `
         --output json
     return $json | ConvertFrom-Json
 }
 
 function Assert-SafeTargets {
-    $production = Get-Instance -Id $ProductionInstanceId
-    if ($production.Name -ne $ExpectedProductionName -or
-        $production.Type -ne $ExpectedProductionType) {
-        throw "QA instance protection check failed. Expected $ExpectedProductionName/$ExpectedProductionType."
-    }
-
-    if ($InstanceId -eq $ProductionInstanceId) {
-        throw "Refusing to manage the production instance."
-    }
-
     $target = Get-Instance -Id $InstanceId
     if ($target.Name -ne $ExpectedName -or
         $target.Purpose -ne $ExpectedPurpose -or
-        $target.Type -ne $ExpectedType -or
-        $target.ProductionInstanceId -ne $ProductionInstanceId) {
+        $target.Type -ne $ExpectedType) {
         throw "Target safety check failed for $InstanceId."
     }
     if ($target.HopLimit -ne 2) {
@@ -197,7 +183,6 @@ Write-Host "Instance:   $($target.Id)"
 Write-Host "State:      $($target.State)"
 Write-Host "Type:       $($target.Type)"
 Write-Host "Public IP:  $($target.PublicIp)"
-Write-Host "QA host:    $ProductionInstanceId (protected; running state is optional)"
 
 switch ($Action) {
     "status" {

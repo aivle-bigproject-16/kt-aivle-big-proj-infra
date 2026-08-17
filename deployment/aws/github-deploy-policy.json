@@ -35,11 +35,11 @@
         "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployService",
         "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectDeployInfra",
         "arn:aws:ssm:ap-northeast-2:825555019742:document/AivleBigProjectRunBenchmark",
-        "arn:aws:ec2:ap-northeast-2:825555019742:instance/i-0562ca896665be441"
+        "arn:aws:ec2:ap-northeast-2:825555019742:instance/i-067b198eda1cd0d09"
       ]
     },
     {
-      "Sid": "SyncGpuTestHost",
+      "Sid": "SyncGpuFallbackHost",
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [

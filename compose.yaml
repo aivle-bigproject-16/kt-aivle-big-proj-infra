@@ -164,10 +164,6 @@ services:
       AI_POOL_SIZE: ${AI_POOL_SIZE:-4}                  # 배치 하나 안의 셀 동시 호출 상한. 잠정값, 실측 후 확정
       LLM_POOL_SIZE: ${LLM_POOL_SIZE:-2}                # 생성 요청 동시 실행 상한
 
-      # 추론 클라이언트 인터페이스의 구현체를 고르는 스위치.
-      # 계약 [실행/환경변수]는 이 변수를 backend 소속으로 적어 두었으나,
-      # 추론 클라이언트가 module-ai 에 있으므로 여기가 실제 자리다. 계약 개정 대상.
-      SERVING_MODE: ${SERVING_MODE:-live}               # live | replay
     networks: [battery-net]
 
   ai-infer:
@@ -260,6 +256,40 @@ services:
       STUB_LATENCY_MS: ${STUB_LATENCY_MS:-800}   # 라이브 추론 지연 흉내
       STUB_REJECT_RATE: ${STUB_REJECT_RATE:-0.3}
       STUB_FAIL_RATE: ${STUB_FAIL_RATE:-0.0}      # FAIL 수신 경로 시험용(기본 비활성)
+    networks: [battery-net]
+
+  replay:
+    profiles: [replay]
+    build: ./replay
+    container_name: battery-replay
+    restart: unless-stopped
+    environment:
+      # Compose config는 replay 프로파일이 꺼져 있어도 보간을 수행한다.
+      # 빈 값은 허용하되 실제 replay 기동은 앱의 startup 검증에서 실패시킨다.
+      REPLAY_FIXTURE_URI: ${REPLAY_FIXTURE_URI:-}
+      REPLAY_FIXTURE_SHA256: ${REPLAY_FIXTURE_SHA256:-}
+      REPLAY_REPORT_FIXTURE_URI: ${REPLAY_REPORT_FIXTURE_URI:-}
+      REPLAY_REPORT_FIXTURE_SHA256: ${REPLAY_REPORT_FIXTURE_SHA256:-}
+      REPLAY_DELAY_MS: ${REPLAY_DELAY_MS:-800}
+      REPLAY_MAX_PENDING: ${REPLAY_MAX_PENDING:-64}
+      AI_INTERNAL_API_KEY: ${AI_INTERNAL_API_KEY}
+      BACKEND_CALLBACK_URL: ${BACKEND_CALLBACK_URL:-http://backend:8080/internal/ai/callbacks/cell}
+      CALLBACK_TIMEOUT_SECONDS: ${CALLBACK_TIMEOUT_SECONDS:-10}
+      CALLBACK_MAX_ATTEMPTS: ${CALLBACK_MAX_ATTEMPTS:-3}
+      AWS_REGION: ${S3_REGION:-ap-northeast-2}
+      AWS_DEFAULT_REGION: ${S3_REGION:-ap-northeast-2}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import json,urllib.request,sys; data=json.load(urllib.request.urlopen('http://localhost:8000/health')); sys.exit(0 if data.get('mode') == 'REPLAY' else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks: [battery-net]
 
   vlm:

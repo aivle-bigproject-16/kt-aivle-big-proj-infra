@@ -9,18 +9,16 @@ CT(파우치)·RGB(원통) 독립 검사 파이프라인 2개 구조의 **통합
 
 ## 📦 컨테이너 구성 — 8종
 
-| Tier | 서비스 | 프로파일 | 포트 | GPU | 역할 |
-| --- | --- | --- | --- | --- | --- |
-| Presentation | `frontend` | `app` | 80 | | 정적 번들 서빙 + `/api` 프록시 + `/ws` WebSocket 프록시 |
-| Application | `backend` | `app` | 8080 | | 오케스트레이션·상태머신·판정·presigned·DB write·**Redis 유일 writer** |
-| Application | `ai-infer` | `ai` | 8000 | ✅ | 라이브 추론(YOLOv11-seg ×2). stateless. 동기 REST |
-| Application | `ai-infer-stub` | `stub` | 8000 | | GPU 없는 개발자용 고정 응답 |
-| Application | `llm-report` | `app` | 8001 | | LangGraph 리포트 생성. stateless. HTTP 콜백 |
-| Application | `ollama` | `ai`,`llm` | 11434 | ✅ | Qwen GGUF 서빙 |
-| Data | `postgres` | *(항상)* | 5432 | | **SSOT.** 메인 RDB + 로그 JSONB |
-| Data | `redis` | *(항상)* | — | | 대시보드 status 캐시 전용 |
-| Data | `minio` | *(항상)* | 9000/9001 | | 개발 오브젝트 스토리지 (배포=AWS S3) |
-| Data | `minio-init` | *(항상)* | — | | 버킷·프리픽스 1회 생성 후 종료 |
+|Tier|서비스|프로파일|포트|GPU|역할|
+|---|---|---|---|---|---|
+|Presentation|`frontend`|`app`|80||정적 번들 서빙과 `/api` 프록시|
+|Application|`backend`|`app`|8080||시뮬레이션·callback·DB·Redis|
+|Application|`backend-ai`|`app`|8081||ai-infer/VLM 요청 전달과 리포트 처리|
+|Application|`ai-infer`|`ai`|8000|필요|LIVE CT/RGB 추론|
+|Application|`ai-infer-stub`|`stub`|8000||개발용 비결정적 스텁|
+|Application|`replay`|`replay`|8000||승인된 기록 결과의 결정적 CPU 재생|
+|Application|`vlm`|`ai`,`llm`|8001|필요|LIVE 리포트 생성|
+|Data|`redis`|항상|내부 전용||대시보드와 시뮬레이션 스냅샷 캐시|
 
 > **`ollama`·`redis`는 포트를 게시하지 않습니다.** 둘 다 기본 설정에 인증이 없어, 외부에 노출되면 누구나 GPU로 추론을 돌리거나 서버를 장악할 수 있습니다. 내부망(`battery-net`) 전용이며 EC2 보안그룹은 80/443만 엽니다.
 
@@ -30,12 +28,11 @@ CT(파우치)·RGB(원통) 독립 검사 파이프라인 2개 구조의 **통합
 cp .env.example .env      # 값 확인 후 사용 (개발 기본값 그대로 가능)
 ```
 
-### 데이터 레이어만 (전원 공통)
+### Redis만
 
 ```bash
 docker compose up -d
-docker compose ps                 # postgres·redis·minio = healthy 확인
-docker compose logs minio-init    # 버킷 레이아웃 출력 확인
+docker compose ps                 # redis = healthy 확인
 ```
 
 ### FE · BE 개발자 — **GPU 불필요**
@@ -44,9 +41,9 @@ docker compose logs minio-init    # 버킷 레이아웃 출력 확인
 docker compose --profile app --profile stub up -d
 ```
 
-`.env`에서 `AI_BASE_URL=http://ai-infer-stub:8000`으로 바꿔 두면 BE가 스텁을 호출합니다. 스텁은 아키텍처 v2 §9 계약 스키마 그대로 고정 응답을 반환하고, `STUB_LATENCY_MS`로 라이브 추론 지연을 흉내냅니다.
+`.env`에서 `AI_SERVER_URL=http://ai-infer-stub:8000`으로 바꾸면 backend-ai가 스텁을 호출합니다. 스텁은 승인된 녹화 결과가 아니므로 데모 판정 재현에는 사용하지 않습니다.
 
-스텁 대신 실제 `ai-infer`를 CPU로 돌리고 싶다면 `.env`에 `DEVICE=cpu`를 두고 `--profile ai`를 켭니다. 뜨긴 뜨지만 추론이 수십 초 걸립니다.
+승인 데모20 결과를 GPU 없이 재현하려면 아래의 `battery-switch-serving-mode replay` 절차를 사용합니다.
 
 ### AI 담당 — **GPU 보유(로컬 4070 Ti)**
 
@@ -54,11 +51,10 @@ docker compose --profile app --profile stub up -d
 docker compose --profile app --profile ai up -d
 ```
 
-### LLM 담당 — `ollama`만 단독
+### LLM 담당 — VLM 단독
 
 ```bash
 docker compose --profile llm up -d
-docker compose exec ollama ollama pull qwen2.5:7b     # GPU 없으면 qwen2.5:1.5b
 ```
 
 ### EC2 배포 — GPU 장치 예약 추가
@@ -67,7 +63,6 @@ docker compose exec ollama ollama pull qwen2.5:7b     # GPU 없으면 qwen2.5:1.
 docker compose -f compose.yaml -f compose.gpu.yaml --profile app --profile ai up -d
 ```
 
-- MinIO 콘솔: http://localhost:9001 (`.env`의 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`)
 - Redis 디버깅: `docker compose exec redis redis-cli`
 - 종료: `docker compose down` / 볼륨까지 초기화: `docker compose down -v`
 
@@ -75,38 +70,39 @@ docker compose -f compose.yaml -f compose.gpu.yaml --profile app --profile ai up
 
 **두 축을 분리했습니다.** *어떤 서비스를 띄울까*는 `profiles`가, *GPU 장치를 붙일까*는 `compose.gpu.yaml`이 담당합니다.
 
-| 프로파일 | 서비스 | 대상 |
-| --- | --- | --- |
-| *(없음 = 항상 기동)* | `postgres` `redis` `minio` `minio-init` | 전원 |
-| `app` | `frontend` `backend` `llm-report` | FE·BE 개발자 |
-| `stub` | `ai-infer-stub` | GPU 없는 BE 개발자 |
-| `ai` | `ai-infer` `ollama` | AI 담당·인프라 |
-| `llm` | `ollama` | LLM 담당 (ai-infer 없이 단독) |
+|프로파일|서비스|대상|
+|---|---|---|
+|없음|`redis`|전원|
+|`app`|`frontend` `backend` `backend-ai`|FE·BE와 서비스 런타임|
+|`stub`|`ai-infer-stub`|GPU 없는 계약 개발|
+|`replay`|`replay`|GPU 없는 승인 결과 재생|
+|`ai`|`ai-infer` `vlm`|LIVE GPU 런타임|
+|`llm`|`vlm`|VLM 단독|
 
-- **데이터 레이어에 프로파일을 주지 않습니다.** `backend`의 `depends_on: postgres`가 프로파일 경계를 넘지 않게 하기 위함입니다.
-- **`backend`는 `ai-infer`·`llm-report`·`ollama`에 `depends_on`을 걸지 않습니다.** 런타임 HTTP 호출이지 기동 의존이 아닙니다. `*_BASE_URL` 환경변수로 붙습니다. 덕분에 GPU 없는 개발자도 `backend`를 띄울 수 있습니다.
+- **Redis에는 프로파일을 주지 않습니다.** 앱과 추론 서비스는 런타임 URL로 연결하며 기동 의존을 걸지 않습니다.
+- **LIVE와 REPLAY는 URL로 전환합니다.** backend-ai를 재생성하기 전에는 환경변수 변경이 반영되지 않습니다.
 - **GPU 예약(`deploy.resources.reservations.devices`)을 `compose.gpu.yaml`로 분리했습니다.** 이 블록이 `compose.yaml`에 있으면 NVIDIA 런타임이 없는 머신에서 파싱 단계부터 실패합니다.
 
 ## 🔀 서빙 모드 — 비상 스위치
 
+`.env`의 `SERVING_MODE` 한 줄만 직접 바꾸지 않습니다. 전환 스크립트가 fixture 무결성과 대상 컨테이너 health를 확인한 뒤 `AI_SERVER_URL`, `LLM_SERVER_URL`, `SERVING_MODE`를 함께 변경합니다. 실패하면 이전 `.env`와 backend-ai를 복구합니다.
+
 ```bash
-SERVING_MODE=live     # ai-infer 로 라이브 추론 (기본)
-SERVING_MODE=replay   # defect_result 의 과거 결과 재생
+sudo battery-switch-serving-mode replay
+sudo battery-switch-serving-mode live
 ```
 
-발표 중 GPU·AI가 죽으면 `.env`를 `replay`로 바꾸고 `docker compose up -d backend`. **FE 화면은 동일합니다.** 리허설을 라이브로 1회 완주해 DB에 결과가 쌓여 있어야 동작합니다.
+REPLAY는 S3의 승인 fixture를 읽으며 현재 DB의 과거 `defect_result`를 조회하지 않습니다. miss는 404이고 LIVE로 자동 폴백하지 않습니다. REPLAY 검증 뒤 GPU 호스트를 정지할 수 있으며 LIVE 복귀 시에는 ai-infer와 vlm이 먼저 healthy여야 합니다.
 
 ## 🗂️ S3(MinIO) 버킷 구조
 
 아키텍처 v2 §8 기준. 버킷은 **비공개**, 이미지 접근은 BE 발급 presigned URL로 일원화합니다.
 
-```
-battery/
-├── pool/ct/{normal,defect}/     CT(파우치) 검증셋+증강 사전적재 (read-only, eviction 제외)
-├── pool/rgb/{normal,defect}/    RGB(원통) 동일
-├── defects/YYYY/MM/DD/          REJECT 이미지 보관 (BE FIFO eviction)
-└── models/                      학습 가중치(.pt/.onnx) — FastAPI 기동 시 로드
-```
+- `simulations/server-simulation-v1.8/replay/`: 승인된 분석 fixture
+  - `demo20-20260817-v1/`: GPU LIVE 원본 정본
+  - `demo20-pass15-reject3-fail2-v1/`: 현재 데모용 15/3/2 QA 파생본
+- `simulations/server-simulation-v1.8/reports/`: 기록된 리포트 응답
+- `models/ai-infer/`: LIVE 모델 번들
 
 > S3에는 실제 디렉터리가 없어 `.keep` 마커로 구조만 표시합니다. 실제 프리픽스는 boto3 `put_object` 시 생성됩니다.
 
@@ -152,9 +148,9 @@ TTL:   3600s
 
 | 항목 | 값 |
 | --- | --- |
-| 인스턴스 | `g4dn.xlarge` (T4 16GB VRAM, 4 vCPU, 16GB RAM), 서울 `ap-northeast-2` |
+| 인스턴스 | `g6.xlarge` (NVIDIA L4 22,888MiB VRAM, 4 vCPU, 16GiB RAM), 서울 `ap-northeast-2` |
 | AMI | Deep Learning AMI (Ubuntu) — NVIDIA 드라이버·Docker·nvidia-container-toolkit 사전설치 |
-| EBS | gp3 60GB |
+| EBS | 암호화 gp3 150GiB |
 | 기동 | **평소 중지.** 리허설·발표 구간만 |
 
 발표 전 워밍업: `ai-infer` 모델 로드 + `ollama` 모델 상주(`OLLAMA_KEEP_ALIVE=-1`) 확인.

@@ -5,12 +5,12 @@ set -Eeuo pipefail
 readonly DEFAULT_DEPLOY_DIR="/opt/battery/infra"
 readonly DEFAULT_AWS_REGION="ap-northeast-2"
 readonly DEFAULT_RUNTIME_PARAMETER="/kt-aivle-big-proj/prod/runtime-env"
-readonly RELEASE_RUNTIME_INSTANCE_ID="i-0f243b999a4840674"
+readonly RELEASE_RUNTIME_INSTANCE_ID="i-067b198eda1cd0d09"
 readonly LOCK_FILE="/var/lock/battery-deploy.lock"
 
 # publish_runtime_env() returns this when the host is deliberately not allowed to
-# own the published runtime release. That is an expected outcome on the G4 QA
-# host, so the caller must not treat it as a deployment failure.
+# own the published runtime release. That is an expected outcome on the stopped
+# G6 fallback host, so the caller must not treat it as a deployment failure.
 readonly RUNTIME_PUBLISH_SKIPPED=3
 
 log() {

@@ -43,7 +43,11 @@ jobs:
           bash -n scripts/post-deploy-benchmark.sh
           bash -n scripts/prepare-fast-test-host.sh
           bash -n scripts/start-fast-test-host.sh
+          bash -n scripts/prepare-replay-host.sh
+          bash -n scripts/switch-serving-mode.sh
           docker compose -f compose.yaml -f compose.gpu.yaml config --quiet
+          docker build --target test --tag battery-replay:test replay
+          docker build --tag battery-replay:ci replay
 
       - name: Build immutable infra bundle
         run: |
@@ -57,6 +61,9 @@ jobs:
             scripts/post-deploy-benchmark.sh \
             scripts/prepare-fast-test-host.sh \
             scripts/start-fast-test-host.sh \
+            scripts/prepare-replay-host.sh \
+            scripts/switch-serving-mode.sh \
+            replay \
             stub
 
       - name: Configure AWS credentials

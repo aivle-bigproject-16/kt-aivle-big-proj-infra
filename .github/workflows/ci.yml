@@ -1,0 +1,43 @@
+name: Replay CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feat/**
+      - fix/**
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate shell and JSON
+        run: |
+          set -euo pipefail
+          bash -n scripts/switch-serving-mode.sh
+          bash -n scripts/prepare-replay-host.sh
+          bash -n scripts/deploy-infra.sh
+          python -m json.tool deployment/aws/replay-fixture-read-policy.json >/dev/null
+
+      - name: Run replay contract tests
+        run: docker build --target test --tag battery-replay:test replay
+
+      - name: Run fixture rebalance tests
+        run: python -m unittest tests.test_rebalance_replay_fixture -v
+
+      - name: Render Compose
+        env:
+          ECR_REGISTRY: 825555019742.dkr.ecr.ap-northeast-2.amazonaws.com
+          FRONTEND_TAG: ci
+          BACKEND_TAG: ci
+          BACKEND_AI_TAG: ci
+          AI_INFER_TAG: ci
+          VLM_TAG: ci
+        run: docker compose -f compose.yaml -f compose.gpu.yaml config --quiet
