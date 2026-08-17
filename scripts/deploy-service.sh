@@ -29,7 +29,7 @@ Usage:
   deploy-service.sh <service> <image-tag>
 
 Services:
-  frontend | backend | backend-ai | ai-infer | vlm
+  frontend | backend | backend-ai | backend-stack | ai-infer | vlm
 
 Environment:
   DEPLOY_DIR  Compose directory (default: /opt/battery/infra)
@@ -165,6 +165,12 @@ service_config() {
       WAIT_TIMEOUT=240
       BENCHMARK_SUITE="none"
       ;;
+    backend-stack)
+      TAG_KEY=""
+      CONTAINER_NAME=""
+      WAIT_TIMEOUT=240
+      BENCHMARK_SUITE="none"
+      ;;
     ai-infer)
       TAG_KEY="AI_INFER_TAG"
       CONTAINER_NAME="battery-ai-infer"
@@ -232,6 +238,50 @@ verify_container() {
   [[ "$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null)" == "running" ]]
 }
 
+verify_http_listener() {
+  local container_name="$1"
+  local port="$2"
+  local path="$3"
+  local container_ip
+
+  container_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name")" || return 1
+  [[ -n "$container_ip" ]] || return 1
+
+  for _ in $(seq 1 30); do
+    if curl -sS --connect-timeout 2 --max-time 5 -o /dev/null \
+      "http://${container_ip}:${port}${path}"; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+verify_service() {
+  local service="$1"
+
+  case "$service" in
+    frontend)
+      curl -fsS --connect-timeout 2 --max-time 10 \
+        "http://127.0.0.1:${FRONTEND_PORT:-80}/" \
+        | grep -Fq '<div id="root"></div>'
+      ;;
+    backend)
+      verify_http_listener battery-backend 8080 /sim
+      ;;
+    backend-ai)
+      verify_http_listener battery-backend-ai 8081 /ai/cells/analyze
+      ;;
+    ai-infer | vlm)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 deploy_once() {
   local service="$1"
   local registry="$2"
@@ -248,6 +298,69 @@ deploy_once() {
   log "starting ${service}"
   "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "$service" || return 1
   verify_container "$CONTAINER_NAME" || return 1
+  verify_service "$service" || return 1
+}
+
+deploy_backend_stack_once() {
+  local registry="$1"
+  local region="$2"
+
+  log "authenticating Docker to ${registry}"
+  aws ecr get-login-password --region "$region" \
+    | docker login --username AWS --password-stdin "$registry" >/dev/null || return 1
+
+  log "pulling backend stack"
+  "${COMPOSE[@]}" config --quiet || return 1
+  "${COMPOSE[@]}" pull backend-ai backend || return 1
+
+  log "starting backend stack"
+  "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" \
+    backend-ai backend || return 1
+  verify_container battery-backend-ai || return 1
+  verify_container battery-backend || return 1
+  verify_service backend-ai || return 1
+  verify_service backend || return 1
+}
+
+deploy_backend_stack() {
+  local env_file="$1"
+  local registry="$2"
+  local region="$3"
+  local new_tag="$4"
+  local old_backend_tag
+  local old_backend_ai_tag
+  local backup_file
+
+  old_backend_tag="$(env_value BACKEND_TAG "$env_file")"
+  old_backend_ai_tag="$(env_value BACKEND_AI_TAG "$env_file")"
+
+  if [[ "$old_backend_tag" == "$new_tag" && "$old_backend_ai_tag" == "$new_tag" ]]; then
+    log "backend stack already uses ${new_tag}"
+    finish_deployment "$env_file" "$region" "backend-stack@${new_tag}"
+    return 0
+  fi
+
+  backup_file="${env_file}.before-backend-stack-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp --preserve=mode,ownership,timestamps -- "$env_file" "$backup_file"
+
+  log "updating backend stack: backend=${old_backend_tag}, backend-ai=${old_backend_ai_tag} -> ${new_tag}"
+  replace_env_value BACKEND_TAG "$new_tag" "$env_file"
+  replace_env_value BACKEND_AI_TAG "$new_tag" "$env_file"
+
+  if deploy_backend_stack_once "$registry" "$region"; then
+    log "deployment succeeded: backend-stack@${new_tag}"
+    finish_deployment "$env_file" "$region" "backend-stack@${new_tag}"
+    return 0
+  fi
+
+  log "deployment failed; restoring backend stack"
+  cp --preserve=mode,ownership,timestamps -- "$backup_file" "$env_file"
+
+  if deploy_backend_stack_once "$registry" "$region"; then
+    die "deployment failed and rollback succeeded: backend=${old_backend_tag}, backend-ai=${old_backend_ai_tag}"
+  fi
+
+  die "deployment and rollback both failed; inspect battery-backend and battery-backend-ai immediately"
 }
 
 main() {
@@ -280,6 +393,12 @@ main() {
   local old_tag
   local backup_file
   registry="$(env_value ECR_REGISTRY "$env_file")"
+
+  if [[ "$service" == "backend-stack" ]]; then
+    deploy_backend_stack "$env_file" "$registry" "$region" "$new_tag"
+    exit 0
+  fi
+
   old_tag="$(env_value "$TAG_KEY" "$env_file")"
 
   if [[ "$old_tag" == "$new_tag" ]]; then
@@ -310,4 +429,6 @@ main() {
   die "deployment and rollback both failed; inspect ${CONTAINER_NAME} immediately"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

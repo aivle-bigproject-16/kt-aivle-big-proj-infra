@@ -37,6 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/deploy-service.sh
+          bash -n scripts/test-deploy-service.sh
+          bash scripts/test-deploy-service.sh
           bash -n scripts/deploy-infra.sh
           bash -n scripts/post-deploy-benchmark.sh
           bash -n scripts/prepare-fast-test-host.sh
@@ -50,6 +52,7 @@ jobs:
             compose.yaml \
             compose.gpu.yaml \
             scripts/deploy-service.sh \
+            scripts/test-deploy-service.sh \
             scripts/deploy-infra.sh \
             scripts/post-deploy-benchmark.sh \
             scripts/prepare-fast-test-host.sh \
@@ -62,6 +65,18 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: "825555019742"
+
+      - name: Verify deployment target is online
+        env:
+          INSTANCE_ID: ${{ vars.AWS_DEPLOY_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          ping_status=$(aws ssm describe-instance-information \
+            --region "$AWS_REGION" \
+            --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text)
+          test "$ping_status" = Online
 
       - name: Upload infra bundle
         env:

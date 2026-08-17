@@ -9,6 +9,7 @@
         "frontend",
         "backend",
         "backend-ai",
+        "backend-stack",
         "ai-infer",
         "vlm"
       ],
