@@ -282,6 +282,30 @@ verify_service() {
   esac
 }
 
+reload_frontend_proxy() {
+  local state
+  local status
+
+  state="$(docker inspect --format '{{.State.Status}}' battery-frontend 2>/dev/null || true)"
+  [[ "$state" == "running" ]] || return 0
+
+  log "reloading frontend proxy after backend address change"
+  docker exec battery-frontend nginx -t || return 1
+  docker exec battery-frontend nginx -s reload || return 1
+
+  for _ in $(seq 1 10); do
+    status="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null \
+      -w '%{http_code}' "http://127.0.0.1:${FRONTEND_PORT:-80}/api/simulations/0" \
+      || true)"
+    case "$status" in
+      200|400|401|403|404) return 0 ;;
+    esac
+    sleep 1
+  done
+
+  return 1
+}
+
 deploy_once() {
   local service="$1"
   local registry="$2"
@@ -320,6 +344,7 @@ deploy_backend_stack_once() {
   verify_container battery-backend || return 1
   verify_service backend-ai || return 1
   verify_service backend || return 1
+  reload_frontend_proxy || return 1
 }
 
 deploy_backend_stack() {
