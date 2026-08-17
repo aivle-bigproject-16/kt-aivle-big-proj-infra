@@ -106,6 +106,11 @@ class IndividualReportRequest(BaseModel):
     ctVoidRatio: float | None
     rgbDefectRate: float | None
     defectInfo: list[dict[str, Any]]
+    sourceInspectionIds: list[int] = Field(default_factory=list)
+    finalLabel: str | None = None
+    inspectionStatus: str | None = None
+    failureType: str | None = None
+    failureReason: str | None = None
 
 
 class DailyDefectCount(BaseModel):
