@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -96,6 +97,8 @@ def validate_individual(entry, report, detail):
         raise RuntimeError(f"PASS report hallucinated a defect for {serial_no}")
     if final_label == "FAIL" and "재검사" not in content:
         raise RuntimeError(f"FAIL report omitted reinspection for {serial_no}")
+    if re.search(r"[\u4e00-\u9fff]", content):
+        raise RuntimeError(f"report contains Chinese text for {serial_no}")
     return {
         "cellSerialNo": serial_no,
         "finalLabel": final_label,
