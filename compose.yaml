@@ -135,7 +135,7 @@ services:
       S3_REGION: ${S3_REGION:-ap-northeast-2}
 
       JWT_SECRET: ${JWT_SECRET}
-      JAVA_TOOL_OPTIONS: "-Xmx1g"    # RAM 예산 고정 (16GB 호스트)
+      JAVA_TOOL_OPTIONS: "-Xmx1g -Duser.timezone=Asia/Seoul"
     networks: [battery-net]
     # 포트 미게시. 외부 노출은 frontend 의 nginx 를 통해서만 한다.
 
@@ -163,6 +163,7 @@ services:
       AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-15}     # 초과 시 판정 FAIL, 배치는 계속
       AI_POOL_SIZE: ${AI_POOL_SIZE:-4}                  # 배치 하나 안의 셀 동시 호출 상한. 잠정값, 실측 후 확정
       LLM_POOL_SIZE: ${LLM_POOL_SIZE:-2}                # 생성 요청 동시 실행 상한
+      JAVA_TOOL_OPTIONS: "-Xmx1g -Duser.timezone=Asia/Seoul"
 
     networks: [battery-net]
 
