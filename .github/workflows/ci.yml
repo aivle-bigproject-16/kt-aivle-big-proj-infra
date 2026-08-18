@@ -32,6 +32,9 @@ jobs:
       - name: Run fixture rebalance tests
         run: python -m unittest tests.test_rebalance_replay_fixture -v
 
+      - name: Run simulation cell pool tests
+        run: python -m unittest tests.test_expand_simulation_cell_pool -v
+
       - name: Render Compose
         env:
           ECR_REGISTRY: 825555019742.dkr.ecr.ap-northeast-2.amazonaws.com
