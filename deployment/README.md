@@ -21,7 +21,7 @@ No long-lived AWS access key or SSH private key is stored in GitHub.
 ## Runtime files
 
 - `/usr/local/bin/battery-deploy-service` updates one image tag, waits for application readiness, and rolls back on failure. `backend-stack` updates and rolls back module-api and module-ai as one release.
-- `/usr/local/bin/battery-deploy-infra` validates an immutable S3 bundle, preserves `.env` and `compose.cpu.yaml`, and rolls back Compose files on failure.
+- `/usr/local/bin/battery-deploy-infra` validates an immutable S3 bundle, preserves `.env` and `compose.cpu.yaml`, and rolls back Compose files on failure. The replay service is built from bundled source rather than a registry tag, so the script rebuilds its image whenever replay is running and restores the previous image on rollback.
 - `/usr/local/bin/battery-switch-serving-mode` verifies the target runtime, changes both AI URLs, recreates backend-ai, and restores the previous `.env` on failure.
 - `/usr/local/bin/battery-post-deploy-benchmark` runs service-specific observational benchmarks after deployment. AI Infer uses 3 fixed CT and 3 fixed RGB requests; VLM uses 2 daily and 2 individual reports. It stores schema-v2 JSON under `/var/lib/battery/benchmarks` and `s3://kt-aivle-big-proj-kks/deploy/benchmarks/<instance-id>/`.
 - AI Infer results separate download, quality-classifier, conditional defect-detector, pipeline, and request wall time. VLM results separate body generation, hallucination critic, retry count, token counts, and report end-to-end time.
