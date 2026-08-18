@@ -21,6 +21,7 @@ from app.fixture import (
     ReportCatalog,
     load_verified_json,
     request_fingerprint,
+    request_modality,
 )
 from app.models import (
     CellAnalysisAccepted,
@@ -61,6 +62,15 @@ def _positive_int(value: str, name: str, minimum: int = 1) -> int:
     return parsed
 
 
+def _boolean(value: str, name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean value")
+
+
 def _positive_float(value: str, name: str) -> float:
     try:
         parsed = float(value)
@@ -84,6 +94,7 @@ class Settings:
     max_pending: int
     callback_timeout_seconds: float
     callback_max_attempts: int
+    cell_pool_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -133,6 +144,10 @@ class Settings:
                 os.getenv("CALLBACK_MAX_ATTEMPTS", "3"),
                 "CALLBACK_MAX_ATTEMPTS",
             ),
+            cell_pool_enabled=_boolean(
+                os.getenv("REPLAY_CELL_POOL", "true"),
+                "REPLAY_CELL_POOL",
+            ),
         )
 
 
@@ -141,6 +156,14 @@ class RuntimeState:
         self.lock = asyncio.Lock()
         self.requests: dict[str, str] = {}
         self.tasks: set[asyncio.Task] = set()
+        # Pooled replay state: each requested cell serial keeps one recorded
+        # slot for the whole run, and slots are handed out without replacement
+        # until the group of recorded cells is exhausted and resets.
+        self.cell_slots: dict[str, str] = {}
+        self.used_slots: set[str] = set()
+        self.attempt_usage: dict[tuple[str, str], int] = {}
+        self.report_slots: dict[str, str] = {}
+        self.used_report_slots: set[str] = set()
         self.metrics = {
             "hits": 0,
             "misses": 0,
@@ -149,6 +172,9 @@ class RuntimeState:
             "inFlight": 0,
             "callbackSuccess": 0,
             "callbackFailure": 0,
+            "poolHits": 0,
+            "poolAssignments": 0,
+            "poolCycles": 0,
         }
 
 
@@ -284,6 +310,101 @@ def create_app(
         state.tasks.add(task)
         task.add_done_callback(state.tasks.discard)
 
+    def assign_pool_slot(cell_serial_no: str) -> str:
+        """Bind a requested cell to one recorded cell (sampling without
+        replacement). When every recorded cell in the group is taken the used
+        set resets and the next group starts from the first slot again."""
+        state = runtime()
+        slots = application.state.catalog.cell_serials
+        existing = state.cell_slots.get(cell_serial_no)
+        if existing is not None:
+            return existing
+        selected = next(
+            (slot for slot in slots if slot not in state.used_slots),
+            None,
+        )
+        if selected is None:
+            state.used_slots.clear()
+            state.metrics["poolCycles"] += 1
+            selected = slots[0]
+        state.used_slots.add(selected)
+        state.cell_slots[cell_serial_no] = selected
+        state.metrics["poolAssignments"] += 1
+        logger.info(
+            "pool slot assigned cell=%s slot=%s cycle=%d",
+            cell_serial_no,
+            selected,
+            state.metrics["poolCycles"],
+        )
+        return selected
+
+    def pooled_analysis(request: CellAnalysisRequest):
+        state = runtime()
+        slot = assign_pool_slot(request.cell_serial_no)
+        modality = request_modality(request.images)
+        usage_key = (request.cell_serial_no, modality)
+        attempt_index = state.attempt_usage.get(usage_key, 0)
+        recorded = application.state.catalog.entry_for(
+            slot,
+            modality,
+            attempt_index,
+        )
+        state.attempt_usage[usage_key] = attempt_index + 1
+        return recorded
+
+    async def pooled_report_serial(
+        cell_serial_no: str,
+        reports: ReportCatalog,
+    ) -> str:
+        """Map an unrecorded cell to one recorded individual report.
+
+        The analysis slot is preferred so the narrative matches the callback
+        that was already replayed for the same cell.
+        """
+        state = runtime()
+        async with state.lock:
+            existing = state.report_slots.get(cell_serial_no)
+            if existing is not None:
+                return existing
+            analysis_slot = state.cell_slots.get(cell_serial_no)
+            if (
+                analysis_slot in reports.individuals
+                and analysis_slot not in state.used_report_slots
+            ):
+                selected = analysis_slot
+            else:
+                selected = next(
+                    (
+                        slot
+                        for slot in reports.cell_serials
+                        if slot not in state.used_report_slots
+                    ),
+                    None,
+                )
+                if selected is None:
+                    state.used_report_slots.clear()
+                    selected = reports.cell_serials[0]
+            state.used_report_slots.add(selected)
+            state.report_slots[cell_serial_no] = selected
+            return selected
+
+    def resolve_analysis(request: CellAnalysisRequest):
+        configured = current_settings()
+        state = runtime()
+        try:
+            return application.state.catalog.match(request)
+        except FixtureMiss as exc:
+            if not configured.cell_pool_enabled:
+                state.metrics["misses"] += 1
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            recorded = pooled_analysis(request)
+        except FixtureMiss as exc:
+            state.metrics["misses"] += 1
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state.metrics["poolHits"] += 1
+        return recorded
+
     @application.post(
         "/ai/cells/analyze",
         response_model=CellAnalysisAccepted,
@@ -307,13 +428,6 @@ def create_app(
                 detail="callbackUrl does not match configured backend callback",
             )
 
-        try:
-            recorded = application.state.catalog.match(request)
-            fingerprint = request_fingerprint(request.images)
-        except FixtureMiss as exc:
-            runtime().metrics["misses"] += 1
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
         identity = _request_identity(request)
         state = runtime()
         async with state.lock:
@@ -332,11 +446,16 @@ def create_app(
                         status_code=503,
                         detail="replay callback queue is full",
                     )
+                recorded = resolve_analysis(request)
                 state.requests[request.request_id] = identity
                 state.metrics["hits"] += 1
                 state.metrics["inFlight"] += 1
                 track(asyncio.create_task(deliver_callback(request, recorded)))
 
+        try:
+            fingerprint = request_fingerprint(request.images)
+        except FixtureError:
+            fingerprint = "unavailable"
         logger.info(
             "replay accepted request=%s fingerprint=%s inspection=%s",
             request.request_id,
@@ -365,11 +484,21 @@ def create_app(
                 status_code=503,
                 detail="report replay fixture is not configured",
             )
+        recorded_serial = None
+        if (
+            current_settings().cell_pool_enabled
+            and request.cellSerialNo not in reports.individuals
+        ):
+            recorded_serial = await pooled_report_serial(
+                request.cellSerialNo,
+                reports,
+            )
         try:
             return reports.individual_response(
                 request.cellSerialNo,
                 request.inspectionId,
                 request.sourceInspectionIds,
+                recorded_serial,
             )
         except FixtureMiss as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -391,12 +520,20 @@ def create_app(
     async def health() -> dict:
         catalog = application.state.catalog
         reports = application.state.reports
+        state = runtime()
         return {
             "status": "ok",
             "mode": "REPLAY",
             "fixture": {
                 "sha256": catalog.digest,
                 "inspectionCount": len(catalog.entries),
+            },
+            "cellPool": {
+                "enabled": current_settings().cell_pool_enabled,
+                "groupSize": len(catalog.cell_serials),
+                "assignedCells": len(state.cell_slots),
+                "slotsInUse": len(state.used_slots),
+                "cycles": state.metrics["poolCycles"],
             },
             "reports": {
                 "enabled": reports is not None,

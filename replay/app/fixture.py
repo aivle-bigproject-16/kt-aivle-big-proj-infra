@@ -45,6 +45,14 @@ def stable_image_key(image: Any) -> StableImageKey:
     return (image.image_type, image.bucket_name, image.object_key)
 
 
+def request_modality(images: Iterable[Any]) -> str:
+    types = sorted({
+        str(image["image_type"]) if isinstance(image, dict) else image.image_type
+        for image in images
+    })
+    return "+".join(types)
+
+
 def request_fingerprint(images: Iterable[Any]) -> str:
     identities = ["|".join(stable_image_key(image)) for image in images]
     if len(identities) != len(set(identities)):
@@ -117,6 +125,34 @@ class RecordedAnalysis:
     images_by_key: dict[StableImageKey, dict[str, Any]]
     results_by_image_id: dict[int, list[dict[str, Any]]]
     fingerprint: str
+    cell_serial_no: str = ""
+    modality: str = ""
+    attempt_no: int = 1
+
+
+CellPoolIndex = dict[str, dict[str, dict[int, "RecordedAnalysis"]]]
+
+
+def _index_cell_pool(
+    inspections: list[dict[str, Any]],
+    recorded_entries: Iterable["RecordedAnalysis"],
+) -> tuple[list[str], CellPoolIndex]:
+    """Group recorded entries by logical cell, keeping fixture order."""
+    index: CellPoolIndex = {}
+    for recorded in recorded_entries:
+        by_modality = index.setdefault(recorded.cell_serial_no, {})
+        attempts = by_modality.setdefault(recorded.modality, {})
+        attempts[recorded.attempt_no] = recorded
+
+    ordered: list[str] = []
+    for inspection in inspections:
+        serial = str(inspection.get("cell_serial_no") or "")
+        if serial in index and serial not in ordered:
+            ordered.append(serial)
+    for serial in index:
+        if serial not in ordered:
+            ordered.append(serial)
+    return ordered, index
 
 
 class ReplayCatalog:
@@ -172,6 +208,9 @@ class ReplayCatalog:
                 )
             if recorded in entries:
                 raise FixtureError(f"duplicate replay fingerprint {recorded}")
+            modality = str(
+                inspection.get("inspection_type") or request_modality(images)
+            )
             images_by_key = {stable_image_key(image): image for image in images}
             selected_results: dict[int, list[dict[str, Any]]] = {}
             for image in images:
@@ -187,12 +226,19 @@ class ReplayCatalog:
                 images_by_key=images_by_key,
                 results_by_image_id=selected_results,
                 fingerprint=recorded,
+                cell_serial_no=str(inspection["cell_serial_no"]),
+                modality=modality,
+                attempt_no=attempt_no,
             )
 
         if not entries:
             raise FixtureError("analysis fixture contains no replay entries")
         self.digest = digest
         self.entries = entries
+        self.cell_serials, self.entries_by_cell = _index_cell_pool(
+            payload["inspections"],
+            entries.values(),
+        )
 
     def match(self, request: CellAnalysisRequest) -> RecordedAnalysis:
         try:
@@ -208,6 +254,37 @@ class ReplayCatalog:
             )
         return recorded
 
+    def entry_for(
+        self,
+        cell_serial_no: str,
+        modality: str,
+        attempt_index: int,
+    ) -> RecordedAnalysis:
+        """Return a recorded entry for a pooled cell slot.
+
+        `attempt_index` is the zero-based count of analyses already replayed
+        for the requesting cell and modality, so a recapture consumes the
+        recorded attempt 2 when the fixture holds one.
+        """
+        by_modality = self.entries_by_cell.get(cell_serial_no)
+        if not by_modality:
+            raise FixtureMiss(f"pool slot has no recorded cell {cell_serial_no}")
+        attempts = by_modality.get(modality)
+        if attempts is None:
+            requested_types = set(modality.split("+"))
+            overlapping = sorted(
+                candidate
+                for candidate in by_modality
+                if set(candidate.split("+")) & requested_types
+            )
+            if not overlapping:
+                raise FixtureMiss(
+                    f"pool slot {cell_serial_no} has no {modality} recording"
+                )
+            attempts = by_modality[overlapping[0]]
+        ordered = [attempts[number] for number in sorted(attempts)]
+        return ordered[min(attempt_index, len(ordered) - 1)]
+
     def build_callback(
         self,
         recorded: RecordedAnalysis,
@@ -215,9 +292,17 @@ class ReplayCatalog:
         completed_at,
     ) -> CellAnalysisCallback:
         image_results = []
+        substitutes = _recorded_images_by_type(recorded)
+        consumed: dict[str, int] = {}
         for current_image in request.images:
             key = stable_image_key(current_image)
             historical_image = recorded.images_by_key.get(key)
+            if historical_image is None:
+                historical_image = _substitute_image(
+                    substitutes,
+                    consumed,
+                    current_image.image_type,
+                )
             if historical_image is None:
                 raise FixtureError(f"matched fixture lost image key {key}")
             rows = recorded.results_by_image_id[int(historical_image["id"])]
@@ -255,6 +340,38 @@ class ReplayCatalog:
             completed_at=completed_at,
             image_results=image_results,
         )
+
+
+def _recorded_images_by_type(
+    recorded: RecordedAnalysis,
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for image in recorded.images_by_key.values():
+        grouped.setdefault(str(image["image_type"]), []).append(image)
+    for images in grouped.values():
+        images.sort(key=lambda row: (str(row["object_key"]), int(row["id"])))
+    return grouped
+
+
+def _substitute_image(
+    grouped: dict[str, list[dict[str, Any]]],
+    consumed: dict[str, int],
+    image_type: str,
+) -> dict[str, Any] | None:
+    """Pick a recorded image for a request whose object keys are not recorded.
+
+    Images of the same modality are consumed in a stable order and wrap around
+    when the request carries more images than the recording.
+    """
+    candidates = grouped.get(image_type)
+    if not candidates:
+        candidates = [image for images in grouped.values() for image in images]
+        candidates.sort(key=lambda row: (str(row["object_key"]), int(row["id"])))
+    if not candidates:
+        return None
+    position = consumed.get(image_type, 0)
+    consumed[image_type] = position + 1
+    return candidates[position % len(candidates)]
 
 
 def _normalize_raw_response(value: Any) -> dict[str, Any] | None:
@@ -372,24 +489,27 @@ class ReportCatalog:
         }
         if "" in self.individuals or len(self.individuals) != len(entries):
             raise FixtureError("individual report cells must be unique and non-empty")
+        self.cell_serials = list(self.individuals)
 
     def individual_response(
         self,
         cell_serial_no: str,
         inspection_id: int | None,
         source_inspection_ids: list[int] | None = None,
+        recorded_cell_serial_no: str | None = None,
     ) -> ReportResponse:
-        entry = self.individuals.get(cell_serial_no)
+        recorded_serial = recorded_cell_serial_no or cell_serial_no
+        entry = self.individuals.get(recorded_serial)
         if entry is None:
             raise FixtureMiss(
-                f"individual report fixture miss for cell {cell_serial_no}"
+                f"individual report fixture miss for cell {recorded_serial}"
             )
         report = entry.get("report") or entry.get("individual")
         if not isinstance(report, dict):
-            raise FixtureError(f"individual report is invalid for {cell_serial_no}")
-        title = _replace(report.get("title"), cell_serial_no, cell_serial_no)
+            raise FixtureError(f"individual report is invalid for {recorded_serial}")
+        title = _replace(report.get("title"), recorded_serial, cell_serial_no)
         content = _replace(
-            report.get("content"), cell_serial_no, cell_serial_no
+            report.get("content"), recorded_serial, cell_serial_no
         )
         recorded_sources = [
             int(value) for value in (entry.get("sourceInspectionIds") or [])
@@ -463,15 +583,21 @@ def _replace_inspection_id_list(
 ) -> str | None:
     if content is None or not recorded or len(recorded) != len(current):
         return content
-    replacements = (
-        (str(recorded), str(current)),
-        (", ".join(str(value) for value in recorded),
-         ", ".join(str(value) for value in current)),
+    mapping = {
+        str(old): str(new)
+        for old, new in zip(recorded, current)
+    }
+    # Digit boundaries keep a short recorded id from rewriting digits that
+    # belong to another number, such as the cell serial of a pooled replay.
+    pattern = re.compile(
+        r"(?<![0-9])("
+        + "|".join(
+            re.escape(value)
+            for value in sorted(mapping, key=len, reverse=True)
+        )
+        + r")(?![0-9])"
     )
-    result = content
-    for old, new in replacements:
-        result = result.replace(old, new)
-    return result
+    return pattern.sub(lambda match: mapping[match.group(1)], content)
 
 
 def _replace_representative_inspection_id(

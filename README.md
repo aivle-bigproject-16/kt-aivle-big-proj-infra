@@ -92,7 +92,18 @@ sudo battery-switch-serving-mode replay
 sudo battery-switch-serving-mode live
 ```
 
-REPLAY는 S3의 승인 fixture를 읽으며 현재 DB의 과거 `defect_result`를 조회하지 않습니다. miss는 404이고 LIVE로 자동 폴백하지 않습니다. REPLAY 검증 뒤 GPU 호스트를 정지할 수 있으며 LIVE 복귀 시에는 ai-infer와 vlm이 먼저 healthy여야 합니다.
+REPLAY는 S3의 승인 fixture를 읽으며 현재 DB의 과거 `defect_result`를 조회하지 않습니다. LIVE로 자동 폴백하지 않습니다. 기본값 `REPLAY_CELL_POOL=true`에서는 fixture에 없는 셀도 녹화된 20셀 그룹에 비복원으로 배정되어 재생되며(20셀 소진 시 그룹 리셋), `REPLAY_CELL_POOL=false`로 두면 종전처럼 miss가 404입니다. REPLAY 검증 뒤 GPU 호스트를 정지할 수 있으며 LIVE 복귀 시에는 ai-infer와 vlm이 먼저 healthy여야 합니다.
+
+### 20셀을 넘는 시뮬레이션
+
+시뮬레이션 시드는 `SIM-0001~SIM-0020`만 만들기 때문에, `batteryCellCount`가 20을 넘으면 backend가 AI 호출 전에 `SIM 시뮬레이션 셀 수가 부족합니다`로 거부합니다. 수백 셀 실행이 필요하면 셀 풀을 먼저 확장합니다.
+
+```bash
+DB_PASSWORD=... python scripts/expand-simulation-cell-pool.py --target-cells 200          # dry run
+DB_PASSWORD=... python scripts/expand-simulation-cell-pool.py --target-cells 200 --execute
+```
+
+녹화된 20셀을 순서대로 소진하며 복제하고, 다 쓰면 다시 첫 셀부터 반복합니다(비복원 + 리셋). 복제 셀은 원본과 같은 S3 객체를 가리키므로 새 이미지 업로드가 필요 없습니다. 이후 REPLAY가 같은 규칙으로 결과를 되돌려주므로 판정 믹스는 20셀 주기로 반복됩니다.
 
 ## 🗂️ S3(MinIO) 버킷 구조
 
