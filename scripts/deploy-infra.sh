@@ -138,8 +138,28 @@ main() {
     "$deploy_dir/compose.yaml" \
     "$deploy_dir/compose.gpu.yaml"
 
+  # The replay service is built from the bundled source instead of a registry
+  # tag, so `up -d` alone keeps the previous image and silently discards the
+  # code that was just deployed.
+  local replay_image_ref=""
+  local replay_image_id=""
+  local replay_built=0
+  if printf '%s\n' "${running_services[@]}" | grep -qx replay; then
+    replay_image_ref="$(docker inspect --format '{{.Config.Image}}' battery-replay 2>/dev/null || true)"
+    replay_image_id="$(docker inspect --format '{{.Image}}' battery-replay 2>/dev/null || true)"
+    log "rebuilding the replay image from the deployed source"
+    if "${COMPOSE[@]}" build replay; then
+      replay_built=1
+    else
+      log "replay image build failed"
+    fi
+  else
+    replay_built=1
+  fi
+
   log "reconciling: ${running_services[*]}"
-  if "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout 900 "${running_services[@]}"; then
+  if (( replay_built )) \
+    && "${COMPOSE[@]}" up -d --no-deps --wait --wait-timeout 900 "${running_services[@]}"; then
     log "infra deployment succeeded: ${bundle_key}"
     if /usr/local/bin/battery-post-deploy-benchmark \
       --trigger "infra@${bundle_key#deploy/infra/}" --suite all; then
@@ -151,6 +171,10 @@ main() {
   fi
 
   log "infra deployment failed; restoring previous Compose files"
+  if [[ -n "$replay_image_id" && -n "$replay_image_ref" ]]; then
+    log "restoring the previous replay image ${replay_image_ref}"
+    docker tag "$replay_image_id" "$replay_image_ref" || true
+  fi
   install -o root -g root -m 0644 "$backup_dir/compose.yaml" "$deploy_dir/compose.yaml"
   install -o root -g root -m 0644 "$backup_dir/compose.gpu.yaml" "$deploy_dir/compose.gpu.yaml"
   install -o root -g root -m 0755 "$backup_dir/battery-deploy-service" /usr/local/bin/battery-deploy-service
