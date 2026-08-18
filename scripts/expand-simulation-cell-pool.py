@@ -8,6 +8,11 @@ image rows of the recorded group, cycling through the group without
 replacement and restarting at the first template whenever it is exhausted.
 The recorded cells themselves are never modified.
 
+Clones inherit the template timestamps instead of the current time. The battery
+list API pages by `created_at` descending, so clones stamped with `now()` would
+fill the first page and hide every inspected cell. The script also realigns
+clones that an earlier run stamped incorrectly.
+
 The REPLAY service maps the cloned cells back onto the recorded results with
 the same group-and-reset rule (see `replay/README.md`).
 """
@@ -63,6 +68,18 @@ def format_serial(number, width=4):
     return f"{CELL_PREFIX}{number:0{width}d}"
 
 
+def template_serials(existing_serials, group_size=None):
+    """Return (all serials in order, the template group)."""
+    ordered = sorted(set(existing_serials), key=serial_number)
+    if not ordered:
+        raise ValueError("no SIM cells exist; run the simulation seed first")
+
+    templates = ordered[: group_size or len(ordered)]
+    if not templates:
+        raise ValueError("template group is empty")
+    return ordered, templates
+
+
 def build_clone_plan(existing_serials, target_cells, group_size=None):
     """Return [(new_serial, template_serial)] needed to reach target_cells.
 
@@ -73,13 +90,7 @@ def build_clone_plan(existing_serials, target_cells, group_size=None):
     if target_cells < 1:
         raise ValueError("target cell count must be positive")
 
-    ordered = sorted(set(existing_serials), key=serial_number)
-    if not ordered:
-        raise ValueError("no SIM cells exist; run the simulation seed first")
-
-    templates = ordered[: group_size or len(ordered)]
-    if not templates:
-        raise ValueError("template group is empty")
+    ordered, templates = template_serials(existing_serials, group_size)
 
     width = max(len(serial) - len(CELL_PREFIX) for serial in ordered)
     taken = set(ordered)
@@ -127,6 +138,7 @@ def apply(target_cells, group_size, execute):
             )
             existing = [row["cell_serial_no"] for row in cursor.fetchall()]
             plan = build_clone_plan(existing, target_cells, group_size)
+            _, templates = template_serials(existing, group_size)
 
             created_cells = 0
             copied_images = 0
@@ -152,8 +164,8 @@ def apply(target_cells, group_size, execute):
                         template.cell_type,
                         template.manufactured_date,
                         template.cell_size,
-                        now(),
-                        now()
+                        template.created_at,
+                        template.updated_at
                     FROM public.battery_cell AS template
                     WHERE template.cell_serial_no = %(template_serial)s
                     ON CONFLICT (cell_serial_no) DO NOTHING
@@ -217,6 +229,28 @@ def apply(target_cells, group_size, execute):
                 )
                 copied_images += cursor.rowcount
 
+            # Clones must not look newer than the cells they were copied from.
+            # The battery list API pages by created_at DESC, so freshly stamped
+            # clones would fill the first page and hide every inspected cell.
+            cursor.execute(
+                """
+                UPDATE public.battery_cell AS clone
+                SET created_at = baseline.created_at,
+                    updated_at = baseline.updated_at
+                FROM (
+                    SELECT min(created_at) AS created_at,
+                           min(updated_at) AS updated_at
+                    FROM public.battery_cell
+                    WHERE cell_serial_no = ANY(%(templates)s)
+                ) AS baseline
+                WHERE clone.cell_serial_no LIKE %(prefix)s
+                  AND clone.cell_serial_no <> ALL(%(templates)s)
+                  AND clone.created_at > baseline.created_at
+                """,
+                {"templates": templates, "prefix": CELL_PREFIX + "%"},
+            )
+            realigned_cells = cursor.rowcount
+
             cursor.execute(
                 """
                 SELECT count(*) AS cells
@@ -254,6 +288,7 @@ def apply(target_cells, group_size, execute):
             "planned": len(plan),
             "createdCells": created_cells,
             "copiedImages": copied_images,
+            "realignedCells": realigned_cells,
             "totalCells": total_cells,
             "totalImages": total_images,
         }
@@ -267,6 +302,7 @@ def main():
         f"{mode}: planned={summary['planned']} "
         f"createdCells={summary['createdCells']} "
         f"copiedImages={summary['copiedImages']} "
+        f"realignedCells={summary['realignedCells']} "
         f"totalCells={summary['totalCells']} "
         f"totalImages={summary['totalImages']}"
     )
