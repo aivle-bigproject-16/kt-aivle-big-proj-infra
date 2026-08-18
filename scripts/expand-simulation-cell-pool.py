@@ -8,10 +8,11 @@ image rows of the recorded group, cycling through the group without
 replacement and restarting at the first template whenever it is exhausted.
 The recorded cells themselves are never modified.
 
-Clones inherit the template timestamps instead of the current time. The battery
-list API pages by `created_at` descending, so clones stamped with `now()` would
-fill the first page and hide every inspected cell. The script also realigns
-clones that an earlier run stamped incorrectly.
+Clones are stamped one day behind the template cells. The battery list API pages
+by `created_at` descending, so clones stamped with `now()` fill the first page
+and hide every inspected cell; stamping them behind the recorded group keeps the
+real cells on the first page. The script also realigns clones that an earlier
+run stamped incorrectly.
 
 The REPLAY service maps the cloned cells back onto the recorded results with
 the same group-and-reset rule (see `replay/README.md`).
@@ -30,6 +31,9 @@ DEFAULT_DB_USERNAME = "postgres.raybvdyfljopcfnhxiaq"
 CELL_PREFIX = "SIM-"
 SERIAL_PATTERN = re.compile(r"^SIM-(\d+)$")
 ADVISORY_LOCK_KEY = "20260818_simulation_cell_pool"
+# Cloned cells are stamped this far behind their template so that the battery
+# list, which pages by created_at descending, keeps the recorded cells first.
+CLONE_AGE_OFFSET = "1 day"
 
 
 def parse_args():
@@ -45,8 +49,9 @@ def parse_args():
         type=int,
         default=None,
         help=(
-            "how many recorded cells act as templates; "
-            "defaults to every SIM cell that already exists"
+            "how many recorded cells act as templates; defaults to every SIM "
+            "cell that already exists, so pass the recorded group size (20) "
+            "once the pool already contains clones"
         ),
     )
     parser.add_argument(
@@ -164,8 +169,8 @@ def apply(target_cells, group_size, execute):
                         template.cell_type,
                         template.manufactured_date,
                         template.cell_size,
-                        template.created_at,
-                        template.updated_at
+                        template.created_at - %(clone_age_offset)s::interval,
+                        template.updated_at - %(clone_age_offset)s::interval
                     FROM public.battery_cell AS template
                     WHERE template.cell_serial_no = %(template_serial)s
                     ON CONFLICT (cell_serial_no) DO NOTHING
@@ -173,6 +178,7 @@ def apply(target_cells, group_size, execute):
                     {
                         "new_serial": new_serial,
                         "template_serial": template_serial,
+                        "clone_age_offset": CLONE_AGE_OFFSET,
                     },
                 )
                 created_cells += cursor.rowcount
@@ -229,14 +235,15 @@ def apply(target_cells, group_size, execute):
                 )
                 copied_images += cursor.rowcount
 
-            # Clones must not look newer than the cells they were copied from.
-            # The battery list API pages by created_at DESC, so freshly stamped
-            # clones would fill the first page and hide every inspected cell.
+            # Clones must sort behind the cells they were copied from. The
+            # battery list API pages by created_at DESC, so clones that are as
+            # new as (or newer than) the recorded group fill the first page and
+            # hide every inspected cell.
             cursor.execute(
                 """
                 UPDATE public.battery_cell AS clone
-                SET created_at = baseline.created_at,
-                    updated_at = baseline.updated_at
+                SET created_at = baseline.created_at - %(clone_age_offset)s::interval,
+                    updated_at = baseline.updated_at - %(clone_age_offset)s::interval
                 FROM (
                     SELECT min(created_at) AS created_at,
                            min(updated_at) AS updated_at
@@ -245,9 +252,13 @@ def apply(target_cells, group_size, execute):
                 ) AS baseline
                 WHERE clone.cell_serial_no LIKE %(prefix)s
                   AND clone.cell_serial_no <> ALL(%(templates)s)
-                  AND clone.created_at > baseline.created_at
+                  AND clone.created_at >= baseline.created_at
                 """,
-                {"templates": templates, "prefix": CELL_PREFIX + "%"},
+                {
+                    "templates": templates,
+                    "prefix": CELL_PREFIX + "%",
+                    "clone_age_offset": CLONE_AGE_OFFSET,
+                },
             )
             realigned_cells = cursor.rowcount
 
