@@ -103,7 +103,99 @@ def report_fixture():
     }
 
 
-def settings():
+def pooled_analysis_fixture(cell_count=2):
+    """LIVE_RECORD fixture with `cell_count` recorded CT cells."""
+    inspections = []
+    images = []
+    results = []
+    replay_index = []
+    for offset in range(cell_count):
+        serial = f"SIM-{offset + 1:04d}"
+        inspection_id = 100 + offset
+        image_id = 200 + offset
+        label = "PASS" if offset % 2 == 0 else "REJECT"
+        image = {
+            "id": image_id,
+            "inspection_id": inspection_id,
+            "image_type": "CT",
+            "bucket_name": "battery",
+            "object_key": f"approved/ct/{serial}.jpg",
+            "source_object_key": f"approved/ct/{serial}.jpg",
+            "attempt_no": 1,
+        }
+        images.append(image)
+        inspections.append({
+            "id": inspection_id,
+            "cell_serial_no": serial,
+            "inspection_type": "CT",
+            "status": "COMPLETED",
+            "final_label": label,
+            "failure_type": None,
+            "failure_reason": None,
+        })
+        results.append({
+            "id": 300 + offset,
+            "inspection_id": inspection_id,
+            "inspection_image_id": image_id,
+            "image_type": "CT",
+            "label": label,
+            "defect_type": "CRACK" if label == "REJECT" else None,
+            "confidence": "0.8800",
+            "bbox": {"x": 1, "y": 2, "width": 3, "height": 4}
+            if label == "REJECT"
+            else None,
+            "raw_response": None,
+            "latency_ms": 100 + offset,
+            "attempt_no": 1,
+        })
+        replay_index.append({
+            "requestFingerprint": request_fingerprint([image]),
+            "inspectionId": inspection_id,
+            "attemptNo": 1,
+            "imageCount": 1,
+            "imageTypes": ["CT"],
+        })
+    return {
+        "schemaVersion": 1,
+        "mode": "LIVE_RECORD",
+        "inspections": inspections,
+        "inspectionImages": images,
+        "defectResults": results,
+        "replayIndex": replay_index,
+    }
+
+
+def pooled_report_fixture(cell_count=2):
+    return {
+        "schemaVersion": 2,
+        "reportDate": "2026-08-16",
+        "individuals": [
+            {
+                "cellSerialNo": f"SIM-{offset + 1:04d}",
+                "inspectionId": 100 + offset,
+                "sourceInspectionIds": [100 + offset],
+                "report": {
+                    "status": "COMPLETED",
+                    "title": f"Cell [SIM-{offset + 1:04d}] 개별 검사 리포트",
+                    "content": (
+                        f"**대표 검사 ID:** {100 + offset}\n"
+                        f"셀 SIM-{offset + 1:04d} 판정 요약"
+                    ),
+                    "failureReason": None,
+                },
+            }
+            for offset in range(cell_count)
+        ],
+        "daily": {
+            "status": "COMPLETED",
+            "title": "2026-08-16 총 요약 보고서",
+            "content": "2026-08-16 recorded narrative",
+            "failureReason": None,
+        },
+    }
+
+
+def settings(cell_pool_enabled=True):
     return Settings(
         fixture_uri="unused",
         fixture_sha256="a" * 64,
@@ -118,16 +210,21 @@ def settings():
         max_pending=4,
         callback_timeout_seconds=1,
         callback_max_attempts=1,
+        cell_pool_enabled=cell_pool_enabled,
     )
 
 
-def request_body(request_id="current-request", object_key="approved/ct/one.jpg"):
+def request_body(
+    request_id="current-request",
+    object_key="approved/ct/one.jpg",
+    cell_serial_no="SIM-0001",
+):
     return {
         "requestId": request_id,
         "batchId": 100,
         "inspectionId": 200,
         "batteryCellId": 300,
-        "cellSerialNo": "SIM-0001",
+        "cellSerialNo": cell_serial_no,
         "requestedAt": datetime.now(timezone.utc).isoformat(),
         "callbackUrl": "http://backend:8080/internal/ai/callbacks/cell",
         "images": [
@@ -141,13 +238,23 @@ def request_body(request_id="current-request", object_key="approved/ct/one.jpg")
     }
 
 
-def build_client(callbacks):
+def build_client(
+    callbacks,
+    cell_pool_enabled=True,
+    analysis_payload=None,
+    report_payload=None,
+):
     async def capture_callback(url, payload, internal_key, timeout):
         callbacks.append((url, payload, internal_key, timeout))
 
-    catalog = ReplayCatalog(analysis_fixture(), "a" * 64)
-    reports = ReportCatalog(report_fixture(), "b" * 64)
-    app = create_app(settings(), catalog, reports, capture_callback)
+    catalog = ReplayCatalog(analysis_payload or analysis_fixture(), "a" * 64)
+    reports = ReportCatalog(report_payload or report_fixture(), "b" * 64)
+    app = create_app(
+        settings(cell_pool_enabled),
+        catalog,
+        reports,
+        capture_callback,
+    )
     return TestClient(app)
 
 
@@ -197,7 +304,7 @@ def test_replays_recorded_result_with_current_ids_and_is_idempotent():
 
 def test_rejects_unauthorized_miss_and_request_id_conflict():
     callbacks = []
-    with build_client(callbacks) as client:
+    with build_client(callbacks, cell_pool_enabled=False) as client:
         assert client.post("/ai/cells/analyze", json=request_body()).status_code == 401
         wrong_callback = request_body(request_id="wrong-callback")
         wrong_callback["callbackUrl"] = "http://untrusted/callback"
@@ -231,7 +338,7 @@ def test_rejects_unauthorized_miss_and_request_id_conflict():
 
 def test_replays_only_recorded_individual_report_and_maps_dynamic_fields():
     callbacks = []
-    with build_client(callbacks) as client:
+    with build_client(callbacks, cell_pool_enabled=False) as client:
         individual = client.post(
             "/vlm/reports/individual",
             json={
@@ -347,3 +454,153 @@ def test_fixture_loader_fails_closed_on_sha_mismatch(tmp_path):
     fixture.write_text(json.dumps(analysis_fixture()), encoding="utf-8")
     with pytest.raises(FixtureError, match="SHA-256 mismatch"):
         load_verified_json(str(fixture), "0" * 64, "ap-northeast-2")
+
+
+def pooled_client(callbacks, cell_count=2):
+    return build_client(
+        callbacks,
+        analysis_payload=pooled_analysis_fixture(cell_count),
+        report_payload=pooled_report_fixture(cell_count),
+    )
+
+
+def test_cell_pool_replays_unrecorded_cells_by_cycling_recorded_group():
+    callbacks = []
+    with pooled_client(callbacks) as client:
+        for index in range(5):
+            response = client.post(
+                "/ai/cells/analyze",
+                json=request_body(
+                    request_id=f"pool-request-{index}",
+                    object_key=f"live/ct/cell-{index}.jpg",
+                    cell_serial_no=f"SIM-9{index:03d}",
+                ),
+                headers={"X-Internal-Api-Key": "test-internal-key"},
+            )
+            assert response.status_code == 202
+
+        wait_for_callbacks(callbacks, 5)
+        assert len(callbacks) == 5
+
+        labels = [payload["finalLabel"] for _, payload, _, _ in callbacks]
+        assert labels == ["PASS", "REJECT", "PASS", "REJECT", "PASS"]
+
+        serials = [payload["cellSerialNo"] for _, payload, _, _ in callbacks]
+        assert serials == [f"SIM-9{index:03d}" for index in range(5)]
+        assert all(
+            payload["imageResults"][0]["imageId"] == 400
+            for _, payload, _, _ in callbacks
+        )
+
+        health = client.get("/health").json()
+        assert health["cellPool"]["enabled"] is True
+        assert health["cellPool"]["groupSize"] == 2
+        assert health["cellPool"]["assignedCells"] == 5
+        assert health["cellPool"]["cycles"] == 2
+        assert health["metrics"]["poolHits"] == 5
+        assert health["metrics"]["misses"] == 0
+
+
+def test_cell_pool_keeps_one_slot_per_cell_across_requests():
+    callbacks = []
+    with pooled_client(callbacks) as client:
+        for attempt in range(2):
+            response = client.post(
+                "/ai/cells/analyze",
+                json=request_body(
+                    request_id=f"recapture-{attempt}",
+                    object_key=f"live/ct/recapture-{attempt}.jpg",
+                    cell_serial_no="SIM-9100",
+                ),
+                headers={"X-Internal-Api-Key": "test-internal-key"},
+            )
+            assert response.status_code == 202
+
+        wait_for_callbacks(callbacks, 2)
+        assert len(callbacks) == 2
+        assert {payload["finalLabel"] for _, payload, _, _ in callbacks} == {"PASS"}
+
+        health = client.get("/health").json()
+        assert health["cellPool"]["assignedCells"] == 1
+        assert health["cellPool"]["cycles"] == 0
+
+
+def test_cell_pool_maps_individual_report_to_assigned_slot():
+    callbacks = []
+    with pooled_client(callbacks) as client:
+        analyze = client.post(
+            "/ai/cells/analyze",
+            json=request_body(
+                request_id="report-cell",
+                object_key="live/ct/report-cell.jpg",
+                cell_serial_no="SIM-9200",
+            ),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert analyze.status_code == 202
+        wait_for_callbacks(callbacks, 1)
+
+        report = client.post(
+            "/vlm/reports/individual",
+            json={
+                "cellSerialNo": "SIM-9200",
+                "inspectionId": 777,
+                "totalImages": 1,
+                "cellSize": None,
+                "pointGroups": [],
+                "ctVoidRatio": None,
+                "rgbDefectRate": None,
+                "defectInfo": [],
+                "sourceInspectionIds": [777],
+            },
+        )
+        assert report.status_code == 200
+        body = report.json()
+        assert "SIM-9200" in body["title"]
+        assert "SIM-9200" in body["content"]
+        assert "SIM-0001" not in body["content"]
+        assert "**대표 검사 ID:** 777" in body["content"]
+
+
+def test_cell_pool_disabled_keeps_fail_closed_miss():
+    callbacks = []
+    with build_client(
+        callbacks,
+        cell_pool_enabled=False,
+        analysis_payload=pooled_analysis_fixture(),
+        report_payload=pooled_report_fixture(),
+    ) as client:
+        response = client.post(
+            "/ai/cells/analyze",
+            json=request_body(
+                request_id="unrecorded",
+                object_key="live/ct/unrecorded.jpg",
+                cell_serial_no="SIM-9999",
+            ),
+            headers={"X-Internal-Api-Key": "test-internal-key"},
+        )
+        assert response.status_code == 404
+        assert client.get("/health").json()["metrics"]["misses"] == 1
+
+
+def test_pooled_report_ids_do_not_rewrite_serial_digits():
+    payload = pooled_report_fixture(1)
+    entry = payload["individuals"][0]
+    entry["inspectionId"] = 1
+    entry["sourceInspectionIds"] = [1]
+    entry["report"]["content"] = (
+        "**대표 검사 ID:** 1\n**연결 검사 ID:** [1]\nSIM-0001 판정 요약"
+    )
+    catalog = ReportCatalog(payload, "b" * 64)
+
+    response = catalog.individual_response(
+        "SIM-RUN-0100",
+        424242,
+        [424242],
+        "SIM-0001",
+    )
+
+    assert "**대표 검사 ID:** 424242" in response.content
+    assert "**연결 검사 ID:** [424242]" in response.content
+    assert "SIM-RUN-0100 판정 요약" in response.content
+    assert "SIM-RUN-042424200" not in response.content
